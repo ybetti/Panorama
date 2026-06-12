@@ -108,13 +108,17 @@
     </div>
     <div class="row">
       <label for="intervalRange">取得間隔</label>
-      <input type="range" id="intervalRange" min="1" max="15" step="1" value="3">
-      <span class="value" id="intervalVal">3°</span>
+      <input type="range" id="intervalRange" min="2" max="20" step="1" value="6">
+      <span class="value" id="intervalVal">6°</span>
     </div>
     <div class="row">
       <label for="featherRange">継ぎ目ブレンド</label>
-      <input type="range" id="featherRange" min="0" max="100" step="5" value="30">
-      <span class="value" id="featherVal">30%</span>
+      <input type="range" id="featherRange" min="0" max="100" step="5" value="40">
+      <span class="value" id="featherVal">40%</span>
+    </div>
+    <div class="row">
+      <label for="alignChk">自動位置補正 (縦)</label>
+      <input type="checkbox" id="alignChk" checked>
     </div>
     <div class="row">
       <label for="autoStopChk">360°で自動終了</label>
@@ -142,6 +146,7 @@
     <p><b>iOS:</b> 「開始」ボタン押下時にジャイロ許可ダイアログが出ます。一度許可してください。</p>
     <p><b>使い方:</b> ①回転方向を選ぶ ②画角(FOV)を実機に合わせる ③開始を押して、青いガイド線を中心に据えながらゆっくり回転 ④360°で自動停止、または「停止」ボタンで終了。</p>
     <p><b>FOVのコツ:</b> 出力が縦長すぎる→FOVを大きく、間延びする→FOVを小さく。</p>
+    <p><b>自動位置補正:</b> 隣接スリットの重なり領域をSAD比較して縦シフト量を推定し、手ブレで上下にズレた分を補います。取得間隔を大きめ (6-10°) にして枚数を減らすと、補正が決まりやすくジャギも目立ちません。</p>
     <p><b>仕組み:</b> <code>DeviceMotionEvent.rotationRate</code> を時間積分して回転角を推定し、一定角度ごとにフレーム中心のスリットを切り出して連結します。</p>
   </details>
 </main>
@@ -160,6 +165,7 @@
   const intervalVal = document.getElementById('intervalVal');
   const featherRange = document.getElementById('featherRange');
   const featherVal = document.getElementById('featherVal');
+  const alignChk = document.getElementById('alignChk');
   const autoStopChk = document.getElementById('autoStopChk');
   const progressFill = document.getElementById('progressFill');
   const progressText = document.getElementById('progressText');
@@ -186,6 +192,9 @@
   let outputHeight = 0;  // 出力キャンバスの高さ (最初の有効フレームで確定)
   let rotationSign = 0;  // +1 or -1: 最初の有意な動きで確定する回転方向
   let progress = 0;      // 採用方向への単調進行 (戻りは無視)
+  let yOffset = 0;       // 累積した縦方向シフト (自動位置補正)
+  let canvasMinY = 0;    // 出力キャンバスの上端が仮想座標で何にあたるか
+  let prevMatch = null;  // 直前スリットのフェザー前コピー (アライメント比較用)
 
   function setStatus(msg, kind = '') {
     statusEl.textContent = msg;
@@ -318,15 +327,15 @@
     if (!vw || !vh) return;
     const fov = +fovRange.value;
     const interval = +intervalRange.value;
-    const featherRatio = (+featherRange.value) / 100; // 0=隙間なし固結, 1=core幅と同じ羽
+    const featherRatio = (+featherRange.value) / 100;
+    // アライメント有効時は最低限の overlap を確保 (フェザー0でも比較領域を作る)
+    const minMatchRatio = alignChk.checked ? 0.25 : 0;
+    const effectiveRatio = Math.max(featherRatio, minMatchRatio);
 
-    // corePx = 1ステップで進む角度ぶんの画素幅 (=隣のスリット中心までの距離)
-    // fullPx = core + 両端 feather → 隣同士が overlap してクロスフェードする
-    let strip, corePx;
+    let strip, corePx, featherPx;
     if (stripDirection === 'horizontal') {
-      // 横回転: 縦のスリット (高さ=vh)
       corePx = Math.max(2, Math.round((interval / fov) * vw));
-      const featherPx = Math.round(corePx * featherRatio);
+      featherPx = Math.round(corePx * effectiveRatio);
       const fullPx = corePx + featherPx * 2;
       const sx = Math.max(0, Math.round((vw - fullPx) / 2));
       const srcW = Math.min(fullPx, vw - sx);
@@ -334,29 +343,96 @@
       strip.width = srcW;
       strip.height = vh;
       strip.getContext('2d').drawImage(video, sx, 0, srcW, vh, 0, 0, srcW, vh);
-      applyHorizontalFeather(strip, featherPx);
     } else {
-      // 縦回転: 横のスリット (元幅=vw, 高さ=fullPx) を 90°回転して縦長の柱にする
       corePx = Math.max(2, Math.round((interval / fov) * vh));
-      const featherPx = Math.round(corePx * featherRatio);
+      featherPx = Math.round(corePx * effectiveRatio);
       const fullPx = corePx + featherPx * 2;
       const sy = Math.max(0, Math.round((vh - fullPx) / 2));
       const srcH = Math.min(fullPx, vh - sy);
       strip = document.createElement('canvas');
-      strip.width = srcH;   // 回転後の幅 = 元の高さ
-      strip.height = vw;    // 回転後の高さ = 元の幅
+      strip.width = srcH;
+      strip.height = vw;
       const sctx = strip.getContext('2d');
       sctx.save();
       sctx.translate(srcH, 0);
       sctx.rotate(Math.PI / 2);
       sctx.drawImage(video, 0, sy, vw, srcH, 0, 0, vw, srcH);
       sctx.restore();
-      applyHorizontalFeather(strip, featherPx);
     }
 
-    frames.push({ strip, corePx });
+    // フェザー適用前のクローンをマッチング用に取っておく
+    const matchCanvas = cloneCanvas(strip);
+
+    // 自動位置補正: 直前のスリットと縦方向SADで最良dyを探す
+    let dy = 0;
+    if (alignChk.checked && prevMatch && featherPx > 1) {
+      dy = findBestVerticalOffset(prevMatch, matchCanvas, featherPx * 2);
+    }
+    yOffset += dy;
+    prevMatch = matchCanvas;
+
+    // 視覚用のフェザー: 撮影で取った余白幅 (featherPx) と同じだけフェードさせる
+    // featherRatio=0 でアライメントONのときも最低25%まで feather が効くトレードオフ
+    if (featherPx > 0) applyHorizontalFeather(strip, featherPx);
+
+    frames.push({ strip, corePx, yOff: yOffset });
     hudFrames.textContent = 'フレーム: ' + frames.length;
     appendToOutput(frames[frames.length - 1]);
+  }
+
+  function cloneCanvas(src) {
+    const c = document.createElement('canvas');
+    c.width = src.width;
+    c.height = src.height;
+    c.getContext('2d').drawImage(src, 0, 0);
+    return c;
+  }
+
+  // 直前 prev の右端と current の左端を比較して、current を縦に何pxずらすと
+  // 内容が一致するかを返す。1D 縦シフト探索のみ (高速化のため間引き)。
+  function findBestVerticalOffset(prev, current, overlapW) {
+    const w = Math.min(overlapW, prev.width, current.width);
+    const h = Math.min(prev.height, current.height);
+    if (w < 2 || h < 20) return 0;
+
+    const prevData = prev.getContext('2d').getImageData(prev.width - w, 0, w, h).data;
+    const currData = current.getContext('2d').getImageData(0, 0, w, h).data;
+
+    // 間引き: 列方向最大8サンプル、行方向は最大256サンプル
+    const xSamples = Math.min(8, w);
+    const xStep = Math.max(1, Math.floor(w / xSamples));
+    const ySamples = Math.min(256, h);
+    const yStep = Math.max(1, Math.floor(h / ySamples));
+    const cols = [];
+    for (let x = 0; x < w; x += xStep) cols.push(x);
+
+    // 探索範囲: 高さの10% まで (最大80px)
+    const maxDy = Math.min(80, Math.floor(h * 0.1));
+    const dyStep = 1;
+
+    let bestDy = 0, bestSAD = Infinity;
+    for (let dy = -maxDy; dy <= maxDy; dy += dyStep) {
+      const yStart = Math.max(0, dy);
+      const yEnd = Math.min(h, h + dy);
+      let sad = 0, count = 0;
+      for (let y = yStart; y < yEnd; y += yStep) {
+        const yc = y - dy;
+        for (const x of cols) {
+          const pi = (y * w + x) * 4;
+          const ci = (yc * w + x) * 4;
+          // 輝度のみで比較 (R+G+B)
+          sad += Math.abs(prevData[pi] - currData[ci])
+               + Math.abs(prevData[pi+1] - currData[ci+1])
+               + Math.abs(prevData[pi+2] - currData[ci+2]);
+          count++;
+        }
+      }
+      if (count > 0) {
+        const mean = sad / count;
+        if (mean < bestSAD) { bestSAD = mean; bestDy = dy; }
+      }
+    }
+    return bestDy;
   }
 
   // 左右の縁をアルファでフェードさせる (destination-in グラデーション)
@@ -382,34 +458,44 @@
     outputCanvas.width = 1;
     outputCanvas.height = Math.max(1, initialH);
     outputHeight = initialH;
+    canvasMinY = 0;
     outputCtx = outputCanvas.getContext('2d');
     outputWrap.classList.remove('empty');
     outputWrap.innerHTML = '';
     outputWrap.appendChild(outputCanvas);
   }
 
-  // 常に横方向に蓄積。スリットは中心 (i+0.5)*corePx に配置するため、隣接スリットの
-  // feather 領域が必ず overlap し、source-over でクロスフェードになる。
+  // 各スリットを (centerX, yOff) 中心に置く。yOff は累積した自動位置補正値。
+  // キャンバスは下にも上にも伸ばせるよう canvasMinY (= キャンバス[0,0]の仮想Y) を追跡。
   function appendToOutput(frame) {
-    const { strip, corePx } = frame;
+    const { strip, corePx, yOff } = frame;
     ensureOutputCanvas(strip.height);
     const idx = frames.length - 1;
     const centerX = (idx + 0.5) * corePx;
     const xLeft = Math.round(centerX - strip.width / 2);
-    const requiredW = Math.max(1, Math.round(centerX + strip.width / 2));
+    const xRight = Math.round(centerX + strip.width / 2);
+    const yTop = yOff;
+    const yBot = yOff + strip.height;
 
-    if (requiredW > outputCanvas.width || strip.height > outputCanvas.height) {
-      const newW = Math.max(outputCanvas.width, requiredW);
-      const newH = Math.max(outputCanvas.height, strip.height);
+    const canvasYTop = canvasMinY;
+    const canvasYBot = canvasMinY + outputCanvas.height;
+    const newYTop = Math.min(canvasYTop, yTop);
+    const newYBot = Math.max(canvasYBot, yBot);
+    const newW = Math.max(outputCanvas.width, xRight);
+    const newH = newYBot - newYTop;
+
+    if (newW > outputCanvas.width || newH > outputCanvas.height) {
       const buf = document.createElement('canvas');
-      buf.width = newW; buf.height = newH;
-      buf.getContext('2d').drawImage(outputCanvas, 0, 0);
+      buf.width = newW;
+      buf.height = newH;
+      const shiftDown = canvasYTop - newYTop;
+      buf.getContext('2d').drawImage(outputCanvas, 0, shiftDown);
       outputCanvas.width = newW;
       outputCanvas.height = newH;
       outputCtx.drawImage(buf, 0, 0);
+      canvasMinY = newYTop;
     }
-    outputCtx.drawImage(strip, xLeft, 0);
-    outputCursorX = requiredW;
+    outputCtx.drawImage(strip, xLeft, yTop - canvasMinY);
     outputSize.textContent = `${outputCanvas.width} × ${outputCanvas.height}`;
   }
 
@@ -429,6 +515,9 @@
     lastTime = 0;
     rotationSign = 0;
     progress = 0;
+    yOffset = 0;
+    canvasMinY = 0;
+    prevMatch = null;
     frames = [];
     outputCanvas = null;
     outputCtx = null;
@@ -478,6 +567,9 @@
     outputCtx = null;
     outputCursorX = 0;
     outputHeight = 0;
+    yOffset = 0;
+    canvasMinY = 0;
+    prevMatch = null;
     outputWrap.innerHTML = '<span>未撮影</span>';
     outputWrap.classList.add('empty');
     outputSize.textContent = '-';
