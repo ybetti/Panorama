@@ -1,0 +1,455 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#111">
+<title>360° パノラマ撮影</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  header { padding: 10px 14px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+  main { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+  .preview-wrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000;
+    border-radius: 8px; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .overlay { position: absolute; inset: 0; pointer-events: none; }
+  .crosshair { position: absolute; top: 50%; left: 50%; width: 40px; height: 40px;
+    transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,0.7); border-radius: 50%; }
+  .crosshair::before, .crosshair::after { content: ""; position: absolute; background: rgba(255,255,255,0.7); }
+  .crosshair::before { top: 50%; left: -10px; right: -10px; height: 2px; transform: translateY(-50%); }
+  .crosshair::after { left: 50%; top: -10px; bottom: -10px; width: 2px; transform: translateX(-50%); }
+  .strip-guide { position: absolute; background: rgba(0, 200, 255, 0.15);
+    border: 1px solid rgba(0, 200, 255, 0.5); }
+  .hud { position: absolute; top: 8px; left: 8px; right: 8px; display: flex;
+    justify-content: space-between; gap: 8px; font-size: 12px; }
+  .hud span { background: rgba(0,0,0,0.55); padding: 4px 8px; border-radius: 4px;
+    font-variant-numeric: tabular-nums; }
+  .progress-bar { height: 8px; background: #222; border-radius: 4px; overflow: hidden; position: relative; }
+  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #0c8, #0ac);
+    transition: width 0.1s linear; }
+  .progress-label { display: flex; justify-content: space-between; font-size: 12px;
+    color: #aaa; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button { padding: 14px 12px; font-size: 15px; font-weight: 600; border-radius: 8px;
+    border: none; background: #2a2a2a; color: #eee; cursor: pointer; transition: opacity 0.15s; }
+  button:active { opacity: 0.7; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: #d33; color: #fff; }
+  button.primary.active { background: #555; }
+  button.secondary { background: #444; }
+  .settings { background: #1a1a1a; padding: 10px 12px; border-radius: 8px;
+    display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .row label { color: #bbb; }
+  .row select, .row input[type=range] { background: #2a2a2a; color: #eee; border: 1px solid #333;
+    border-radius: 4px; padding: 4px 6px; font-size: 13px; }
+  .row input[type=range] { flex: 1; min-width: 0; padding: 0; }
+  .row .value { color: #eee; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+  .output-wrap { background: #000; border-radius: 8px; padding: 8px; overflow: auto; max-height: 50vh; }
+  .output-wrap canvas { display: block; max-width: 100%; height: auto; image-rendering: auto; }
+  .output-wrap.empty { display: flex; align-items: center; justify-content: center;
+    min-height: 80px; color: #555; font-size: 13px; }
+  .status { font-size: 12px; color: #888; padding: 4px 2px; min-height: 1.2em; }
+  .status.error { color: #f66; }
+  .status.ok { color: #6c6; }
+  details { background: #1a1a1a; padding: 8px 12px; border-radius: 8px; font-size: 12px; color: #aaa; }
+  details summary { cursor: pointer; color: #ccc; }
+  details p { margin: 6px 0; }
+  details code { background: #2a2a2a; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header><h1>360° パノラマ撮影</h1></header>
+<main>
+  <div class="preview-wrap">
+    <video id="preview" playsinline muted autoplay></video>
+    <div class="overlay">
+      <div class="crosshair"></div>
+      <div class="strip-guide" id="stripGuide"></div>
+      <div class="hud">
+        <span id="hudAxis">軸: -</span>
+        <span id="hudFrames">フレーム: 0</span>
+        <span id="hudAngle">0.0°</span>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="progress-label">
+      <span>進捗</span>
+      <span id="progressText">0° / 360°</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn" class="primary">開始</button>
+    <button id="stopBtn" class="secondary" disabled>停止</button>
+  </div>
+
+  <div class="settings">
+    <div class="row">
+      <label for="modeSel">回転方向</label>
+      <select id="modeSel">
+        <option value="auto">自動検出</option>
+        <option value="vertical">縦回転 (空↔地面)</option>
+        <option value="horizontal">横回転 (左右)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="fovRange">推定画角 (FOV)</label>
+      <input type="range" id="fovRange" min="40" max="90" step="1" value="65">
+      <span class="value" id="fovVal">65°</span>
+    </div>
+    <div class="row">
+      <label for="intervalRange">取得間隔</label>
+      <input type="range" id="intervalRange" min="1" max="15" step="1" value="3">
+      <span class="value" id="intervalVal">3°</span>
+    </div>
+    <div class="row">
+      <label for="autoStopChk">360°で自動終了</label>
+      <input type="checkbox" id="autoStopChk" checked>
+    </div>
+  </div>
+
+  <div class="status" id="status">「開始」を押すとカメラとジャイロの許可を求めます。</div>
+
+  <div>
+    <div class="progress-label">
+      <span>出力プレビュー</span>
+      <span id="outputSize">-</span>
+    </div>
+    <div class="output-wrap empty" id="outputWrap"><span>未撮影</span></div>
+    <div class="controls" style="margin-top: 8px;">
+      <button id="downloadBtn" class="secondary" disabled>PNG保存</button>
+      <button id="resetBtn" class="secondary" disabled>リセット</button>
+    </div>
+  </div>
+
+  <details>
+    <summary>使い方とトラブルシュート</summary>
+    <p><b>必須条件:</b> HTTPS または <code>localhost</code> で開いてください。HTTP配信ではカメラとジャイロが動きません。</p>
+    <p><b>iOS:</b> 「開始」ボタン押下時にジャイロ許可ダイアログが出ます。一度許可してください。</p>
+    <p><b>使い方:</b> ①回転方向を選ぶ ②画角(FOV)を実機に合わせる ③開始を押して、青いガイド線を中心に据えながらゆっくり回転 ④360°で自動停止、または「停止」ボタンで終了。</p>
+    <p><b>FOVのコツ:</b> 出力が縦長すぎる→FOVを大きく、間延びする→FOVを小さく。</p>
+    <p><b>仕組み:</b> <code>DeviceMotionEvent.rotationRate</code> を時間積分して回転角を推定し、一定角度ごとにフレーム中心のスリットを切り出して連結します。</p>
+  </details>
+</main>
+
+<script>
+(() => {
+  const video = document.getElementById('preview');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const modeSel = document.getElementById('modeSel');
+  const fovRange = document.getElementById('fovRange');
+  const fovVal = document.getElementById('fovVal');
+  const intervalRange = document.getElementById('intervalRange');
+  const intervalVal = document.getElementById('intervalVal');
+  const autoStopChk = document.getElementById('autoStopChk');
+  const progressFill = document.getElementById('progressFill');
+  const progressText = document.getElementById('progressText');
+  const hudAxis = document.getElementById('hudAxis');
+  const hudAngle = document.getElementById('hudAngle');
+  const hudFrames = document.getElementById('hudFrames');
+  const stripGuide = document.getElementById('stripGuide');
+  const statusEl = document.getElementById('status');
+  const outputWrap = document.getElementById('outputWrap');
+  const outputSize = document.getElementById('outputSize');
+
+  let stream = null;
+  let capturing = false;
+  let lastTime = 0;
+  let cum = { alpha: 0, beta: 0, gamma: 0 };
+  let primaryAxis = null;
+  let lastCaptureAngle = 0;
+  let frames = [];
+  let outputCanvas = null;
+  let outputCtx = null;
+  let stripDirection = null; // 'vertical' or 'horizontal' (strip orientation in output)
+  let motionHandler = null;
+
+  function setStatus(msg, kind = '') {
+    statusEl.textContent = msg;
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  fovRange.addEventListener('input', () => { fovVal.textContent = fovRange.value + '°'; updateStripGuide(); });
+  intervalRange.addEventListener('input', () => { intervalVal.textContent = intervalRange.value + '°'; updateStripGuide(); });
+  modeSel.addEventListener('change', updateStripGuide);
+
+  function updateStripGuide() {
+    const mode = modeSel.value === 'auto' ? (primaryAxis === 'alpha' ? 'horizontal' : 'vertical') : modeSel.value;
+    const fov = +fovRange.value;
+    const interval = +intervalRange.value;
+    const wrap = video.parentElement;
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    if (mode === 'horizontal') {
+      const stripPx = (interval / fov) * w;
+      stripGuide.style.cssText =
+        `left:${(w - stripPx) / 2}px; top:0; width:${stripPx}px; height:${h}px;`;
+    } else {
+      const stripPx = (interval / fov) * h;
+      stripGuide.style.cssText =
+        `left:0; top:${(h - stripPx) / 2}px; width:${w}px; height:${stripPx}px;`;
+    }
+  }
+
+  async function ensureMotionPermission() {
+    if (typeof DeviceMotionEvent !== 'undefined'
+        && typeof DeviceMotionEvent.requestPermission === 'function') {
+      const res = await DeviceMotionEvent.requestPermission();
+      if (res !== 'granted') throw new Error('ジャイロ許可が拒否されました');
+    }
+  }
+
+  async function ensureCamera() {
+    if (stream) return;
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await new Promise(r => {
+      if (video.readyState >= 2) r();
+      else video.addEventListener('loadedmetadata', () => r(), { once: true });
+    });
+    await video.play().catch(() => {});
+    updateStripGuide();
+  }
+
+  function onMotion(event) {
+    const r = event.rotationRate;
+    if (!r) return;
+    const now = performance.now();
+    if (lastTime === 0) { lastTime = now; return; }
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+    if (dt > 0.5) return; // 大きすぎる間隔はノイズとして無視
+
+    cum.alpha += (r.alpha || 0) * dt;
+    cum.beta  += (r.beta  || 0) * dt;
+    cum.gamma += (r.gamma || 0) * dt;
+
+    const mode = modeSel.value;
+    let axis;
+    if (mode === 'auto') {
+      // 主軸自動検出: 最初に20°超えた軸を採用
+      if (!primaryAxis) {
+        const abs = { alpha: Math.abs(cum.alpha), beta: Math.abs(cum.beta), gamma: Math.abs(cum.gamma) };
+        const maxAxis = Object.keys(abs).reduce((a, b) => abs[a] > abs[b] ? a : b);
+        if (abs[maxAxis] > 20) {
+          primaryAxis = maxAxis;
+          stripDirection = (primaryAxis === 'alpha') ? 'horizontal' : 'vertical';
+          updateStripGuide();
+        }
+      }
+      axis = primaryAxis || 'beta';
+    } else if (mode === 'horizontal') {
+      axis = 'alpha';
+      stripDirection = 'horizontal';
+    } else {
+      axis = 'beta';
+      stripDirection = 'vertical';
+    }
+
+    const current = Math.abs(cum[axis]);
+    hudAxis.textContent = '軸: ' + axis;
+    hudAngle.textContent = current.toFixed(1) + '°';
+    const pct = Math.min(100, (current / 360) * 100);
+    progressFill.style.width = pct + '%';
+    progressText.textContent = current.toFixed(0) + '° / 360°';
+
+    if (capturing && current - lastCaptureAngle >= +intervalRange.value) {
+      captureFrame();
+      lastCaptureAngle = current;
+    }
+
+    if (capturing && autoStopChk.checked && current >= 360) {
+      stop();
+      setStatus('360°到達: 自動終了しました', 'ok');
+    }
+  }
+
+  function captureFrame() {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh) return;
+    const fov = +fovRange.value;
+    const interval = +intervalRange.value;
+
+    let strip;
+    if (stripDirection === 'horizontal') {
+      // 縦のスリット (横回転用)
+      const stripPx = Math.max(2, Math.round((interval / fov) * vw));
+      const sx = Math.round((vw - stripPx) / 2);
+      strip = document.createElement('canvas');
+      strip.width = stripPx;
+      strip.height = vh;
+      strip.getContext('2d').drawImage(video, sx, 0, stripPx, vh, 0, 0, stripPx, vh);
+    } else {
+      // 横のスリット (縦回転用)
+      const stripPx = Math.max(2, Math.round((interval / fov) * vh));
+      const sy = Math.round((vh - stripPx) / 2);
+      strip = document.createElement('canvas');
+      strip.width = vw;
+      strip.height = stripPx;
+      strip.getContext('2d').drawImage(video, 0, sy, vw, stripPx, 0, 0, vw, stripPx);
+    }
+    frames.push(strip);
+    hudFrames.textContent = 'フレーム: ' + frames.length;
+    appendToOutput(strip);
+  }
+
+  function ensureOutputCanvas() {
+    if (outputCanvas) return;
+    outputCanvas = document.createElement('canvas');
+    outputCanvas.width = 1;
+    outputCanvas.height = 1;
+    outputCtx = outputCanvas.getContext('2d');
+    outputWrap.classList.remove('empty');
+    outputWrap.innerHTML = '';
+    outputWrap.appendChild(outputCanvas);
+  }
+
+  function appendToOutput(strip) {
+    ensureOutputCanvas();
+    if (stripDirection === 'horizontal') {
+      // 横に連結
+      const newW = outputCanvas.width === 1 ? strip.width : outputCanvas.width + strip.width;
+      const newH = strip.height;
+      const buf = document.createElement('canvas');
+      buf.width = newW;
+      buf.height = newH;
+      const bctx = buf.getContext('2d');
+      if (outputCanvas.width > 1) bctx.drawImage(outputCanvas, 0, 0);
+      bctx.drawImage(strip, outputCanvas.width === 1 ? 0 : outputCanvas.width, 0);
+      outputCanvas.width = newW;
+      outputCanvas.height = newH;
+      outputCtx.drawImage(buf, 0, 0);
+    } else {
+      // 縦に連結
+      const newW = strip.width;
+      const newH = outputCanvas.height === 1 ? strip.height : outputCanvas.height + strip.height;
+      const buf = document.createElement('canvas');
+      buf.width = newW;
+      buf.height = newH;
+      const bctx = buf.getContext('2d');
+      if (outputCanvas.height > 1) bctx.drawImage(outputCanvas, 0, 0);
+      bctx.drawImage(strip, 0, outputCanvas.height === 1 ? 0 : outputCanvas.height);
+      outputCanvas.width = newW;
+      outputCanvas.height = newH;
+      outputCtx.drawImage(buf, 0, 0);
+    }
+    outputSize.textContent = `${outputCanvas.width} × ${outputCanvas.height}`;
+  }
+
+  async function start() {
+    try {
+      setStatus('カメラとジャイロを準備中…');
+      await ensureMotionPermission();
+      await ensureCamera();
+    } catch (e) {
+      setStatus('初期化失敗: ' + e.message, 'error');
+      return;
+    }
+
+    cum = { alpha: 0, beta: 0, gamma: 0 };
+    primaryAxis = null;
+    lastCaptureAngle = 0;
+    lastTime = 0;
+    frames = [];
+    outputCanvas = null;
+    outputCtx = null;
+    outputWrap.innerHTML = '<span>未撮影</span>';
+    outputWrap.classList.add('empty');
+    outputSize.textContent = '-';
+    hudFrames.textContent = 'フレーム: 0';
+    hudAngle.textContent = '0.0°';
+    progressFill.style.width = '0%';
+    progressText.textContent = '0° / 360°';
+
+    if (modeSel.value === 'horizontal') stripDirection = 'horizontal';
+    else if (modeSel.value === 'vertical') stripDirection = 'vertical';
+    else stripDirection = 'vertical'; // 仮: 自動検出までの初期値
+
+    capturing = true;
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    downloadBtn.disabled = true;
+    resetBtn.disabled = true;
+
+    captureFrame(); // 開始時の初期フレーム
+
+    motionHandler = onMotion;
+    window.addEventListener('devicemotion', motionHandler);
+
+    setStatus('撮影中: ゆっくり回転してください');
+  }
+
+  function stop() {
+    if (!capturing) return;
+    capturing = false;
+    if (motionHandler) window.removeEventListener('devicemotion', motionHandler);
+    motionHandler = null;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    downloadBtn.disabled = frames.length === 0;
+    resetBtn.disabled = frames.length === 0;
+    setStatus(`撮影終了: ${frames.length}フレーム / 出力 ${outputCanvas ? outputCanvas.width + '×' + outputCanvas.height : '-'}`, 'ok');
+  }
+
+  function reset() {
+    frames = [];
+    outputCanvas = null;
+    outputCtx = null;
+    outputWrap.innerHTML = '<span>未撮影</span>';
+    outputWrap.classList.add('empty');
+    outputSize.textContent = '-';
+    downloadBtn.disabled = true;
+    resetBtn.disabled = true;
+    hudFrames.textContent = 'フレーム: 0';
+    setStatus('リセットしました');
+  }
+
+  function download() {
+    if (!outputCanvas) return;
+    outputCanvas.toBlob(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `panorama-${Date.now()}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, 'image/png');
+  }
+
+  startBtn.addEventListener('click', start);
+  stopBtn.addEventListener('click', stop);
+  downloadBtn.addEventListener('click', download);
+  resetBtn.addEventListener('click', reset);
+  window.addEventListener('resize', updateStripGuide);
+  window.addEventListener('orientationchange', () => setTimeout(updateStripGuide, 300));
+
+  // 初期ガイド
+  updateStripGuide();
+
+  // 必須条件チェック
+  if (!('mediaDevices' in navigator) || !navigator.mediaDevices.getUserMedia) {
+    setStatus('このブラウザはカメラAPIに対応していません', 'error');
+    startBtn.disabled = true;
+  } else if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    setStatus('HTTPS または localhost で開いてください (現在: ' + location.protocol + ')', 'error');
+  }
+})();
+</script>
+</body>
+</html>
