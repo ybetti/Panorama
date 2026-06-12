@@ -113,8 +113,8 @@
     </div>
     <div class="row">
       <label for="featherRange">継ぎ目ブレンド</label>
-      <input type="range" id="featherRange" min="0" max="100" step="5" value="60">
-      <span class="value" id="featherVal">60%</span>
+      <input type="range" id="featherRange" min="0" max="100" step="5" value="30">
+      <span class="value" id="featherVal">30%</span>
     </div>
     <div class="row">
       <label for="autoStopChk">360°で自動終了</label>
@@ -184,6 +184,8 @@
   let motionHandler = null;
   let outputCursorX = 0; // 次のスリットを置く中心X (各スリットは中心が (i+0.5)*corePx)
   let outputHeight = 0;  // 出力キャンバスの高さ (最初の有効フレームで確定)
+  let rotationSign = 0;  // +1 or -1: 最初の有意な動きで確定する回転方向
+  let progress = 0;      // 採用方向への単調進行 (戻りは無視)
 
   function setStatus(msg, kind = '') {
     statusEl.textContent = msg;
@@ -223,10 +225,20 @@
 
   async function ensureCamera() {
     if (stream) return;
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    });
+    // できるだけ高解像度を要求 (低解像度しか出ない端末はフォールバック)
+    const constraintsList = [
+      { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      { facingMode: { ideal: 'environment' } },
+    ];
+    let lastErr;
+    for (const v of constraintsList) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
+        break;
+      } catch (e) { lastErr = e; }
+    }
+    if (!stream) throw lastErr || new Error('カメラ取得失敗');
     video.srcObject = stream;
     await new Promise(r => {
       if (video.readyState >= 2) r();
@@ -234,6 +246,7 @@
     });
     await video.play().catch(() => {});
     updateStripGuide();
+    setStatus(`カメラ取得: ${video.videoWidth}×${video.videoHeight}`, 'ok');
   }
 
   function onMotion(event) {
@@ -271,19 +284,29 @@
       stripDirection = 'vertical';
     }
 
-    const current = Math.abs(cum[axis]);
-    hudAxis.textContent = '軸: ' + axis;
-    hudAngle.textContent = current.toFixed(1) + '°';
-    const pct = Math.min(100, (current / 360) * 100);
-    progressFill.style.width = pct + '%';
-    progressText.textContent = current.toFixed(0) + '° / 360°';
-
-    if (capturing && current - lastCaptureAngle >= +intervalRange.value) {
-      captureFrame();
-      lastCaptureAngle = current;
+    // 採用軸の値の符号で回転方向を決定 (5°以上動いてから)
+    const signed = cum[axis];
+    if (rotationSign === 0 && Math.abs(signed) > 5) {
+      rotationSign = signed > 0 ? 1 : -1;
     }
 
-    if (capturing && autoStopChk.checked && current >= 360) {
+    // 採用方向への正方向値 (戻れば減る、進めば増える)
+    const directedNow = rotationSign === 0 ? 0 : rotationSign * signed;
+    // progress は単調増加のみ — 戻りは反映しない (= 同じ場面の二重カウント防止)
+    if (directedNow > progress) progress = directedNow;
+
+    hudAxis.textContent = '軸: ' + axis + (rotationSign ? (rotationSign > 0 ? ' (+)' : ' (-)') : '');
+    hudAngle.textContent = progress.toFixed(1) + '°';
+    const pct = Math.min(100, (progress / 360) * 100);
+    progressFill.style.width = pct + '%';
+    progressText.textContent = progress.toFixed(0) + '° / 360°';
+
+    if (capturing && progress - lastCaptureAngle >= +intervalRange.value) {
+      captureFrame();
+      lastCaptureAngle = progress;
+    }
+
+    if (capturing && autoStopChk.checked && progress >= 360) {
       stop();
       setStatus('360°到達: 自動終了しました', 'ok');
     }
@@ -404,6 +427,8 @@
     primaryAxis = null;
     lastCaptureAngle = 0;
     lastTime = 0;
+    rotationSign = 0;
+    progress = 0;
     frames = [];
     outputCanvas = null;
     outputCtx = null;
