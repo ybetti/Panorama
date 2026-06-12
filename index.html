@@ -198,6 +198,7 @@
   let rotationSign = 0;  // +1 or -1: 最初の有意な動きで確定する回転方向
   let progress = 0;      // 採用方向への単調進行 (戻りは無視)
   let yOffset = 0;       // 累積した縦方向シフト (自動位置補正)
+  let xOffset = 0;       // 累積した横方向シフト (corePx基準からの調整)
   let canvasMinY = 0;    // 出力キャンバスの上端が仮想座標で何にあたるか
   let prevMatch = null;  // 直前スリットのフェザー前コピー (アライメント比較用)
 
@@ -368,19 +369,22 @@
     // フェザー適用前のクローンをマッチング用に取っておく
     const matchCanvas = cloneCanvas(strip);
 
-    // 自動位置補正: 直前のスリットと縦方向SADで最良dyを探す
-    let dy = 0;
+    // 自動位置補正: 直前のスリットと2D-SADで最良 (dx, dy) を探す
+    let dx = 0, dy = 0;
     if (alignChk.checked && prevMatch && featherPx > 1) {
-      dy = findBestVerticalOffset(prevMatch, matchCanvas, featherPx * 2);
+      const r = findBestOffset(prevMatch, matchCanvas, corePx);
+      dx = r.dx;
+      dy = r.dy;
     }
     yOffset += dy;
+    xOffset += dx;
     prevMatch = matchCanvas;
 
     // 視覚用のフェザー: 撮影で取った余白幅 (featherPx) と同じだけフェードさせる
     // featherRatio=0 でアライメントONのときも最低25%まで feather が効くトレードオフ
     if (featherPx > 0) applyHorizontalFeather(strip, featherPx);
 
-    frames.push({ strip, corePx, yOff: yOffset });
+    frames.push({ strip, corePx, xOff: xOffset, yOff: yOffset });
     hudFrames.textContent = 'フレーム: ' + frames.length;
     appendToOutput(frames[frames.length - 1]);
   }
@@ -393,51 +397,55 @@
     return c;
   }
 
-  // 直前 prev の右端と current の左端を比較して、current を縦に何pxずらすと
-  // 内容が一致するかを返す。1D 縦シフト探索のみ (高速化のため間引き)。
-  function findBestVerticalOffset(prev, current, overlapW) {
-    const w = Math.min(overlapW, prev.width, current.width);
+  // prev の右側と current の左側の重なり領域を、2D シフト (dx, dy) を変えながら
+  // SAD最小化で探索。dx は corePx 基準からの調整量 (+dx でステップが広がる)。
+  function findBestOffset(prev, current, expectedCorePx) {
+    const pW = prev.width, cW = current.width;
     const h = Math.min(prev.height, current.height);
-    if (w < 2 || h < 20) return 0;
+    const expectedOverlap = pW - expectedCorePx; // = 2 * featherPx
+    if (h < 20 || expectedOverlap < 4) return { dx: 0, dy: 0 };
 
-    const prevData = prev.getContext('2d').getImageData(prev.width - w, 0, w, h).data;
-    const currData = current.getContext('2d').getImageData(0, 0, w, h).data;
+    const prevData = prev.getContext('2d').getImageData(0, 0, pW, h).data;
+    const currData = current.getContext('2d').getImageData(0, 0, cW, h).data;
 
-    // 間引き: 列方向最大8サンプル、行方向は最大256サンプル
-    const xSamples = Math.min(8, w);
-    const xStep = Math.max(1, Math.floor(w / xSamples));
-    const ySamples = Math.min(256, h);
-    const yStep = Math.max(1, Math.floor(h / ySamples));
-    const cols = [];
-    for (let x = 0; x < w; x += xStep) cols.push(x);
-
-    // 探索範囲: 高さの5% まで (最大40px)
+    // 探索範囲 (横は実用上 ±30% でほぼ十分、縦は5% / 40px)
+    const maxDx = Math.max(2, Math.floor(expectedOverlap * 0.3));
     const maxDy = Math.min(40, Math.floor(h * 0.05));
-    const dyStep = 1;
+    // サンプリング (重なり領域内のサンプル数を一定にする)
+    const yStep = Math.max(1, Math.floor(h / 80));
+    const dyStep = 2; // 縦は粗く: 2px刻み
 
-    let bestDy = 0, bestSAD = Infinity;
-    for (let dy = -maxDy; dy <= maxDy; dy += dyStep) {
-      const yStart = Math.max(0, dy);
-      const yEnd = Math.min(h, h + dy);
-      let sad = 0, count = 0;
-      for (let y = yStart; y < yEnd; y += yStep) {
-        const yc = y - dy;
-        for (const x of cols) {
-          const pi = (y * w + x) * 4;
-          const ci = (yc * w + x) * 4;
-          // 輝度のみで比較 (R+G+B)
-          sad += Math.abs(prevData[pi] - currData[ci])
-               + Math.abs(prevData[pi+1] - currData[ci+1])
-               + Math.abs(prevData[pi+2] - currData[ci+2]);
-          count++;
+    let bestDx = 0, bestDy = 0, bestSAD = Infinity;
+    for (let dx = -maxDx; dx <= maxDx; dx++) {
+      const colPstart = Math.max(0, expectedCorePx + dx);
+      const colPend = Math.min(pW, cW + expectedCorePx + dx);
+      const overlapW = colPend - colPstart;
+      if (overlapW < 4) continue;
+      const xStep = Math.max(1, Math.floor(overlapW / 8));
+
+      for (let dy = -maxDy; dy <= maxDy; dy += dyStep) {
+        let sad = 0, count = 0;
+        const yStart = Math.max(0, dy);
+        const yEnd = Math.min(h, h + dy);
+        for (let y = yStart; y < yEnd; y += yStep) {
+          const yc = y - dy;
+          for (let cp = colPstart; cp < colPend; cp += xStep) {
+            const cc = cp - expectedCorePx - dx;
+            const pi = (y * pW + cp) * 4;
+            const ci = (yc * cW + cc) * 4;
+            sad += Math.abs(prevData[pi] - currData[ci])
+                 + Math.abs(prevData[pi+1] - currData[ci+1])
+                 + Math.abs(prevData[pi+2] - currData[ci+2]);
+            count++;
+          }
+        }
+        if (count > 0) {
+          const mean = sad / count;
+          if (mean < bestSAD) { bestSAD = mean; bestDx = dx; bestDy = dy; }
         }
       }
-      if (count > 0) {
-        const mean = sad / count;
-        if (mean < bestSAD) { bestSAD = mean; bestDy = dy; }
-      }
     }
-    return bestDy;
+    return { dx: bestDx, dy: bestDy };
   }
 
   // 左右の縁をアルファでフェードさせる (destination-in グラデーション)
@@ -473,10 +481,10 @@
   // 各スリットを (centerX, yOff) 中心に置く。yOff は累積した自動位置補正値。
   // キャンバスは下にも上にも伸ばせるよう canvasMinY (= キャンバス[0,0]の仮想Y) を追跡。
   function appendToOutput(frame) {
-    const { strip, corePx, yOff } = frame;
+    const { strip, corePx, xOff, yOff } = frame;
     ensureOutputCanvas(strip.height);
     const idx = frames.length - 1;
-    const centerX = (idx + 0.5) * corePx;
+    const centerX = (idx + 0.5) * corePx + xOff;
     const xLeft = Math.round(centerX - strip.width / 2);
     const xRight = Math.round(centerX + strip.width / 2);
     const yTop = yOff;
@@ -520,16 +528,16 @@
     innerBot = Math.min(outputCanvas.height, Math.ceil(innerBot));
     const newH = innerBot - innerTop;
     if (newH <= 0 || newH >= outputCanvas.height) return;
-    // 横方向は左右の透過余白も同時に切り詰める
+    // 横方向は左右の透過余白も同時に切り詰める (xOff累積を反映)
     let leftX = 0, rightX = outputCanvas.width;
     if (frames.length > 0) {
       const corePx = frames[0].corePx;
-      const firstHalfW = frames[0].strip.width / 2;
-      const lastHalfW = frames[frames.length - 1].strip.width / 2;
-      const firstCenter = 0.5 * corePx;
-      const lastCenter = (frames.length - 0.5) * corePx;
-      leftX = Math.max(0, Math.floor(firstCenter - firstHalfW));
-      rightX = Math.min(outputCanvas.width, Math.ceil(lastCenter + lastHalfW));
+      const firstFrame = frames[0];
+      const lastFrame = frames[frames.length - 1];
+      const firstCenter = 0.5 * corePx + firstFrame.xOff;
+      const lastCenter = (frames.length - 0.5) * corePx + lastFrame.xOff;
+      leftX = Math.max(0, Math.floor(firstCenter - firstFrame.strip.width / 2));
+      rightX = Math.min(outputCanvas.width, Math.ceil(lastCenter + lastFrame.strip.width / 2));
     }
     const newW = rightX - leftX;
     if (newW <= 0) return;
@@ -561,6 +569,7 @@
     rotationSign = 0;
     progress = 0;
     yOffset = 0;
+    xOffset = 0;
     canvasMinY = 0;
     prevMatch = null;
     frames = [];
@@ -614,6 +623,7 @@
     outputCursorX = 0;
     outputHeight = 0;
     yOffset = 0;
+    xOffset = 0;
     canvasMinY = 0;
     prevMatch = null;
     outputWrap.innerHTML = '<span>未撮影</span>';
