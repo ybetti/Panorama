@@ -108,8 +108,8 @@
     </div>
     <div class="row">
       <label for="intervalRange">取得間隔</label>
-      <input type="range" id="intervalRange" min="2" max="20" step="1" value="6">
-      <span class="value" id="intervalVal">6°</span>
+      <input type="range" id="intervalRange" min="2" max="90" step="1" value="45">
+      <span class="value" id="intervalVal">45° (≈8枚)</span>
     </div>
     <div class="row">
       <label for="featherRange">継ぎ目ブレンド</label>
@@ -213,7 +213,11 @@
   }
 
   fovRange.addEventListener('input', () => { fovVal.textContent = fovRange.value + '°'; updateStripGuide(); });
-  intervalRange.addEventListener('input', () => { intervalVal.textContent = intervalRange.value + '°'; updateStripGuide(); });
+  intervalRange.addEventListener('input', () => {
+    const n = Math.round(360 / +intervalRange.value);
+    intervalVal.textContent = intervalRange.value + '° (≈' + n + '枚)';
+    updateStripGuide();
+  });
   featherRange.addEventListener('input', () => { featherVal.textContent = featherRange.value + '%'; });
   modeSel.addEventListener('change', updateStripGuide);
 
@@ -321,14 +325,16 @@
     progressFill.style.width = pct + '%';
     progressText.textContent = progress.toFixed(0) + '° / 360°';
 
-    if (capturing && progress - lastCaptureAngle >= +intervalRange.value) {
-      captureFrame();
-      lastCaptureAngle = progress;
-    }
-
+    // 360°到達を先に判定 (0°と360°が同じ向きなので、最後の重複1枚をキャプチャしない)
     if (capturing && autoStopChk.checked && progress >= 360) {
       stop();
       setStatus('360°到達: 自動終了しました', 'ok');
+      return;
+    }
+
+    if (capturing && progress - lastCaptureAngle >= +intervalRange.value) {
+      captureFrame();
+      lastCaptureAngle = progress;
     }
   }
 
@@ -346,18 +352,20 @@
     let strip, corePx, featherPx;
     if (stripDirection === 'horizontal') {
       corePx = Math.max(2, Math.round((interval / fov) * vw));
-      featherPx = Math.round(corePx * effectiveRatio);
-      const fullPx = corePx + featherPx * 2;
+      const requestedFeather = Math.round(corePx * effectiveRatio);
+      const fullPx = corePx + requestedFeather * 2;
       const sx = Math.max(0, Math.round((vw - fullPx) / 2));
       const srcW = Math.min(fullPx, vw - sx);
       strip = document.createElement('canvas');
       strip.width = srcW;
       strip.height = vh;
       strip.getContext('2d').drawImage(video, sx, 0, srcW, vh, 0, 0, srcW, vh);
+      // フェザー幅 = 実際の重なり幅。左端だけフェードして右は alpha=1 のまま保つ方式。
+      featherPx = Math.max(0, srcW - corePx);
     } else {
       corePx = Math.max(2, Math.round((interval / fov) * vh));
-      featherPx = Math.round(corePx * effectiveRatio);
-      const fullPx = corePx + featherPx * 2;
+      const requestedFeather = Math.round(corePx * effectiveRatio);
+      const fullPx = corePx + requestedFeather * 2;
       const sy = Math.max(0, Math.round((vh - fullPx) / 2));
       const srcH = Math.min(fullPx, vh - sy);
       strip = document.createElement('canvas');
@@ -369,6 +377,7 @@
       sctx.rotate(Math.PI / 2);
       sctx.drawImage(video, 0, sy, vw, srcH, 0, 0, vw, srcH);
       sctx.restore();
+      featherPx = Math.max(0, srcH - corePx);
     }
 
     // 自動位置補正: 直前のスリットと2D-SADで最良 (dx, dy) を探す
@@ -452,18 +461,20 @@
     return { dx: bestDx, dy: bestDy };
   }
 
-  // 左右の縁をアルファでフェードさせる (destination-in グラデーション)
-  function applyHorizontalFeather(canvas, featherPx) {
+  // 左端だけアルファをフェードさせる (右端は alpha=1 を保持)。
+  // 描画順を 0→N-1 にすると、後発スリットの fade-in と先発スリットの不透明部分が
+  // source-over で線形にクロスフェードする。
+  function applyLeftFeather(canvas, featherPx) {
     if (featherPx <= 0) return;
     const w = canvas.width, h = canvas.height;
+    if (featherPx >= w) return;
     const ctx = canvas.getContext('2d');
     ctx.save();
     ctx.globalCompositeOperation = 'destination-in';
     const g = ctx.createLinearGradient(0, 0, w, 0);
     g.addColorStop(0, 'rgba(0,0,0,0)');
     g.addColorStop(featherPx / w, 'rgba(0,0,0,1)');
-    g.addColorStop((w - featherPx) / w, 'rgba(0,0,0,1)');
-    g.addColorStop(1, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,0,1)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
@@ -487,8 +498,9 @@
   function appendToOutput(frame, idx) {
     const { raw, corePx, featherPx, xOff, yOff } = frame;
     // 描画用に生スリットをクローンしてフェザーを当てる
+    // 1枚目はフェードなし (前のスリットがない)、それ以外は左端だけフェード
     const strip = cloneCanvas(raw);
-    if (featherPx > 0) applyHorizontalFeather(strip, featherPx);
+    if (idx > 0 && featherPx > 0) applyLeftFeather(strip, featherPx);
     ensureOutputCanvas(strip.height);
     const centerX = (idx + 0.5) * corePx + xOff;
     const xLeft = Math.round(centerX - strip.width / 2);
