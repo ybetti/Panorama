@@ -117,8 +117,12 @@
       <span class="value" id="featherVal">40%</span>
     </div>
     <div class="row">
-      <label for="alignChk">自動位置補正 (縦)</label>
+      <label for="alignChk">撮影中の自動位置補正</label>
       <input type="checkbox" id="alignChk" checked>
+    </div>
+    <div class="row">
+      <label for="refineChk">完了時に再アライメント (高精度)</label>
+      <input type="checkbox" id="refineChk" checked>
     </div>
     <div class="row">
       <label for="autoCropChk">完了時に余白を自動トリム</label>
@@ -170,6 +174,7 @@
   const featherRange = document.getElementById('featherRange');
   const featherVal = document.getElementById('featherVal');
   const alignChk = document.getElementById('alignChk');
+  const refineChk = document.getElementById('refineChk');
   const autoCropChk = document.getElementById('autoCropChk');
   const autoStopChk = document.getElementById('autoStopChk');
   const progressFill = document.getElementById('progressFill');
@@ -366,27 +371,22 @@
       sctx.restore();
     }
 
-    // フェザー適用前のクローンをマッチング用に取っておく
-    const matchCanvas = cloneCanvas(strip);
-
     // 自動位置補正: 直前のスリットと2D-SADで最良 (dx, dy) を探す
+    // strip はここ以降フェザーをかけずに保持し、appendToOutput でクローンしてフェードする
     let dx = 0, dy = 0;
     if (alignChk.checked && prevMatch && featherPx > 1) {
-      const r = findBestOffset(prevMatch, matchCanvas, corePx);
+      const r = findBestOffset(prevMatch, strip, corePx);
       dx = r.dx;
       dy = r.dy;
     }
     yOffset += dy;
     xOffset += dx;
-    prevMatch = matchCanvas;
+    prevMatch = strip;
 
-    // 視覚用のフェザー: 撮影で取った余白幅 (featherPx) と同じだけフェードさせる
-    // featherRatio=0 でアライメントONのときも最低25%まで feather が効くトレードオフ
-    if (featherPx > 0) applyHorizontalFeather(strip, featherPx);
-
-    frames.push({ strip, corePx, xOff: xOffset, yOff: yOffset });
+    // フェザーは描画時にかける (再アライメント後の再描画に備えて生データを保持)
+    frames.push({ raw: strip, corePx, featherPx, xOff: xOffset, yOff: yOffset });
     hudFrames.textContent = 'フレーム: ' + frames.length;
-    appendToOutput(frames[frames.length - 1]);
+    appendToOutput(frames[frames.length - 1], frames.length - 1);
   }
 
   function cloneCanvas(src) {
@@ -399,7 +399,8 @@
 
   // prev の右側と current の左側の重なり領域を、2D シフト (dx, dy) を変えながら
   // SAD最小化で探索。dx は corePx 基準からの調整量 (+dx でステップが広がる)。
-  function findBestOffset(prev, current, expectedCorePx) {
+  // thorough=true で広範囲・細刻みの後処理用モード
+  function findBestOffset(prev, current, expectedCorePx, thorough = false) {
     const pW = prev.width, cW = current.width;
     const h = Math.min(prev.height, current.height);
     const expectedOverlap = pW - expectedCorePx; // = 2 * featherPx
@@ -408,12 +409,15 @@
     const prevData = prev.getContext('2d').getImageData(0, 0, pW, h).data;
     const currData = current.getContext('2d').getImageData(0, 0, cW, h).data;
 
-    // 探索範囲 (横は実用上 ±30% でほぼ十分、縦は5% / 40px)
-    const maxDx = Math.max(2, Math.floor(expectedOverlap * 0.3));
-    const maxDy = Math.min(40, Math.floor(h * 0.05));
-    // サンプリング (重なり領域内のサンプル数を一定にする)
-    const yStep = Math.max(1, Math.floor(h / 80));
-    const dyStep = 2; // 縦は粗く: 2px刻み
+    // 探索範囲: 通常は実用域に絞る、thoroughでは広めに
+    const maxDx = thorough
+      ? Math.max(4, Math.floor(expectedOverlap * 0.4))
+      : Math.max(2, Math.floor(expectedOverlap * 0.3));
+    const maxDy = thorough
+      ? Math.min(60, Math.floor(h * 0.08))
+      : Math.min(40, Math.floor(h * 0.05));
+    const yStep = Math.max(1, Math.floor(h / (thorough ? 100 : 80)));
+    const dyStep = thorough ? 1 : 2;
 
     let bestDx = 0, bestDy = 0, bestSAD = Infinity;
     for (let dx = -maxDx; dx <= maxDx; dx++) {
@@ -480,10 +484,12 @@
 
   // 各スリットを (centerX, yOff) 中心に置く。yOff は累積した自動位置補正値。
   // キャンバスは下にも上にも伸ばせるよう canvasMinY (= キャンバス[0,0]の仮想Y) を追跡。
-  function appendToOutput(frame) {
-    const { strip, corePx, xOff, yOff } = frame;
+  function appendToOutput(frame, idx) {
+    const { raw, corePx, featherPx, xOff, yOff } = frame;
+    // 描画用に生スリットをクローンしてフェザーを当てる
+    const strip = cloneCanvas(raw);
+    if (featherPx > 0) applyHorizontalFeather(strip, featherPx);
     ensureOutputCanvas(strip.height);
-    const idx = frames.length - 1;
     const centerX = (idx + 0.5) * corePx + xOff;
     const xLeft = Math.round(centerX - strip.width / 2);
     const xRight = Math.round(centerX + strip.width / 2);
@@ -515,12 +521,10 @@
   // 完了時: 全スリットが覆っているY範囲だけにクロップ (透過の楔形を除去)
   function autoCropOutput() {
     if (!outputCanvas || frames.length === 0) return;
-    // 各スリットの canvas-y 範囲は [yOff - canvasMinY, yOff - canvasMinY + strip.height)
-    // 全スリットの「交わり」を取れば全部が覆っているバンドになる
     let innerTop = -Infinity, innerBot = Infinity;
     for (const f of frames) {
       const top = f.yOff - canvasMinY;
-      const bot = top + f.strip.height;
+      const bot = top + f.raw.height;
       if (top > innerTop) innerTop = top;
       if (bot < innerBot) innerBot = bot;
     }
@@ -528,7 +532,6 @@
     innerBot = Math.min(outputCanvas.height, Math.ceil(innerBot));
     const newH = innerBot - innerTop;
     if (newH <= 0 || newH >= outputCanvas.height) return;
-    // 横方向は左右の透過余白も同時に切り詰める (xOff累積を反映)
     let leftX = 0, rightX = outputCanvas.width;
     if (frames.length > 0) {
       const corePx = frames[0].corePx;
@@ -536,8 +539,8 @@
       const lastFrame = frames[frames.length - 1];
       const firstCenter = 0.5 * corePx + firstFrame.xOff;
       const lastCenter = (frames.length - 0.5) * corePx + lastFrame.xOff;
-      leftX = Math.max(0, Math.floor(firstCenter - firstFrame.strip.width / 2));
-      rightX = Math.min(outputCanvas.width, Math.ceil(lastCenter + lastFrame.strip.width / 2));
+      leftX = Math.max(0, Math.floor(firstCenter - firstFrame.raw.width / 2));
+      rightX = Math.min(outputCanvas.width, Math.ceil(lastCenter + lastFrame.raw.width / 2));
     }
     const newW = rightX - leftX;
     if (newW <= 0) return;
@@ -550,6 +553,39 @@
     outputCanvas.height = newH;
     outputCtx.drawImage(buf, 0, 0);
     outputSize.textContent = `${outputCanvas.width} × ${outputCanvas.height}`;
+  }
+
+  // 撮影終了時に全フレームを「より広く / 細かく」再SADして、xOff/yOff を計算し直す。
+  // ペアごとに独立に最適化 (隣接ペアのみのローカル最適化)。
+  async function refineAlignment() {
+    if (frames.length < 2) return;
+    setStatus(`再アライメント中... 0/${frames.length - 1}`, '');
+    let cumX = 0, cumY = 0;
+    frames[0].xOff = 0;
+    frames[0].yOff = 0;
+    for (let i = 1; i < frames.length; i++) {
+      const r = findBestOffset(frames[i - 1].raw, frames[i].raw, frames[i].corePx, true);
+      cumX += r.dx;
+      cumY += r.dy;
+      frames[i].xOff = cumX;
+      frames[i].yOff = cumY;
+      if (i % 4 === 0) {
+        setStatus(`再アライメント中... ${i}/${frames.length - 1}`, '');
+        await new Promise(res => setTimeout(res, 0));
+      }
+    }
+  }
+
+  // フレーム配列の現在の xOff/yOff から出力キャンバスを描き直す
+  function rerenderOutput() {
+    outputCanvas = null;
+    outputCtx = null;
+    canvasMinY = 0;
+    outputWrap.innerHTML = '';
+    outputWrap.classList.remove('empty');
+    for (let i = 0; i < frames.length; i++) {
+      appendToOutput(frames[i], i);
+    }
   }
 
   async function start() {
@@ -603,14 +639,20 @@
     setStatus('撮影中: ゆっくり回転してください');
   }
 
-  function stop() {
+  async function stop() {
     if (!capturing) return;
     capturing = false;
     if (motionHandler) window.removeEventListener('devicemotion', motionHandler);
     motionHandler = null;
-    if (autoCropChk.checked) autoCropOutput();
-    startBtn.disabled = false;
     stopBtn.disabled = true;
+
+    if (refineChk.checked && frames.length >= 2) {
+      await refineAlignment();
+      rerenderOutput();
+    }
+    if (autoCropChk.checked) autoCropOutput();
+
+    startBtn.disabled = false;
     downloadBtn.disabled = frames.length === 0;
     resetBtn.disabled = frames.length === 0;
     setStatus(`撮影終了: ${frames.length}フレーム / 出力 ${outputCanvas ? outputCanvas.width + '×' + outputCanvas.height : '-'}`, 'ok');
