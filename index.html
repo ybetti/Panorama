@@ -121,6 +121,10 @@
       <input type="checkbox" id="alignChk" checked>
     </div>
     <div class="row">
+      <label for="autoCropChk">完了時に余白を自動トリム</label>
+      <input type="checkbox" id="autoCropChk" checked>
+    </div>
+    <div class="row">
       <label for="autoStopChk">360°で自動終了</label>
       <input type="checkbox" id="autoStopChk" checked>
     </div>
@@ -166,6 +170,7 @@
   const featherRange = document.getElementById('featherRange');
   const featherVal = document.getElementById('featherVal');
   const alignChk = document.getElementById('alignChk');
+  const autoCropChk = document.getElementById('autoCropChk');
   const autoStopChk = document.getElementById('autoStopChk');
   const progressFill = document.getElementById('progressFill');
   const progressText = document.getElementById('progressText');
@@ -406,8 +411,8 @@
     const cols = [];
     for (let x = 0; x < w; x += xStep) cols.push(x);
 
-    // 探索範囲: 高さの10% まで (最大80px)
-    const maxDy = Math.min(80, Math.floor(h * 0.1));
+    // 探索範囲: 高さの5% まで (最大40px)
+    const maxDy = Math.min(40, Math.floor(h * 0.05));
     const dyStep = 1;
 
     let bestDy = 0, bestSAD = Infinity;
@@ -499,6 +504,46 @@
     outputSize.textContent = `${outputCanvas.width} × ${outputCanvas.height}`;
   }
 
+  // 完了時: 全スリットが覆っているY範囲だけにクロップ (透過の楔形を除去)
+  function autoCropOutput() {
+    if (!outputCanvas || frames.length === 0) return;
+    // 各スリットの canvas-y 範囲は [yOff - canvasMinY, yOff - canvasMinY + strip.height)
+    // 全スリットの「交わり」を取れば全部が覆っているバンドになる
+    let innerTop = -Infinity, innerBot = Infinity;
+    for (const f of frames) {
+      const top = f.yOff - canvasMinY;
+      const bot = top + f.strip.height;
+      if (top > innerTop) innerTop = top;
+      if (bot < innerBot) innerBot = bot;
+    }
+    innerTop = Math.max(0, Math.floor(innerTop));
+    innerBot = Math.min(outputCanvas.height, Math.ceil(innerBot));
+    const newH = innerBot - innerTop;
+    if (newH <= 0 || newH >= outputCanvas.height) return;
+    // 横方向は左右の透過余白も同時に切り詰める
+    let leftX = 0, rightX = outputCanvas.width;
+    if (frames.length > 0) {
+      const corePx = frames[0].corePx;
+      const firstHalfW = frames[0].strip.width / 2;
+      const lastHalfW = frames[frames.length - 1].strip.width / 2;
+      const firstCenter = 0.5 * corePx;
+      const lastCenter = (frames.length - 0.5) * corePx;
+      leftX = Math.max(0, Math.floor(firstCenter - firstHalfW));
+      rightX = Math.min(outputCanvas.width, Math.ceil(lastCenter + lastHalfW));
+    }
+    const newW = rightX - leftX;
+    if (newW <= 0) return;
+
+    const buf = document.createElement('canvas');
+    buf.width = newW;
+    buf.height = newH;
+    buf.getContext('2d').drawImage(outputCanvas, -leftX, -innerTop);
+    outputCanvas.width = newW;
+    outputCanvas.height = newH;
+    outputCtx.drawImage(buf, 0, 0);
+    outputSize.textContent = `${outputCanvas.width} × ${outputCanvas.height}`;
+  }
+
   async function start() {
     try {
       setStatus('カメラとジャイロを準備中…');
@@ -554,6 +599,7 @@
     capturing = false;
     if (motionHandler) window.removeEventListener('devicemotion', motionHandler);
     motionHandler = null;
+    if (autoCropChk.checked) autoCropOutput();
     startBtn.disabled = false;
     stopBtn.disabled = true;
     downloadBtn.disabled = frames.length === 0;
