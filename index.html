@@ -108,8 +108,12 @@
     </div>
     <div class="row">
       <label for="featherRange">継ぎ目ブレンド</label>
-      <input type="range" id="featherRange" min="0" max="100" step="5" value="50">
-      <span class="value" id="featherVal">50%</span>
+      <input type="range" id="featherRange" min="0" max="100" step="5" value="10">
+      <span class="value" id="featherVal">10%</span>
+    </div>
+    <div class="row">
+      <label for="lockChk">露出/ピントを固定 (スジ防止)</label>
+      <input type="checkbox" id="lockChk" checked>
     </div>
     <div class="row">
       <label for="alignChk">縦方向のブレ補正</label>
@@ -158,6 +162,7 @@
   const featherRange = document.getElementById('featherRange');
   const featherVal = document.getElementById('featherVal');
   const alignChk = document.getElementById('alignChk');
+  const lockChk = document.getElementById('lockChk');
   const autoCropChk = document.getElementById('autoCropChk');
   const progressFill = document.getElementById('progressFill');
   const progressText = document.getElementById('progressText');
@@ -175,7 +180,7 @@
   // 「実際に動いたぶん」だけ中央スリットを切り出して連結するため、
   // 角度推定のドリフトに起因する空白・ズレが起きず滑らかにつながる。
 
-  const DW = 160;            // 位置合わせ用の縮小幅(px)
+  const DW = 240;            // 位置合わせ用の縮小幅(px) 大きいほど高精度
   const AXIS_THRESH = 30;    // 自動検出: 主軸を確定する累積移動量(実解像度px)
   const MAX_COAST = 6;       // 位置合わせ失敗時に前回速度で補間し続ける最大フレーム数
   const REG_OK_SCORE = 30;   // 位置合わせ成功とみなす平均輝度差のしきい値(0-255)
@@ -269,6 +274,22 @@
     setStatus(`カメラ取得: ${video.videoWidth}×${video.videoHeight}`, 'ok');
   }
 
+  // 露出/フォーカス/ホワイトバランスを現在値で固定し、フレーム間の
+  // 明るさ・ピントの変動(継ぎ目の縦スジの原因)を抑える。対応端末のみ有効。
+  async function lockCameraSettings() {
+    if (!lockChk.checked || !stream) return;
+    const track = stream.getVideoTracks()[0];
+    if (!track || !track.getCapabilities || !track.applyConstraints) return;
+    let caps = {};
+    try { caps = track.getCapabilities() || {}; } catch (e) { return; }
+    const advanced = [];
+    if (caps.exposureMode && caps.exposureMode.includes('manual')) advanced.push({ exposureMode: 'manual' });
+    if (caps.focusMode && caps.focusMode.includes('manual')) advanced.push({ focusMode: 'manual' });
+    if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes('manual')) advanced.push({ whiteBalanceMode: 'manual' });
+    if (!advanced.length) return;
+    try { await track.applyConstraints({ advanced }); } catch (e) { /* 非対応端末は無視 */ }
+  }
+
   // 現フレームを縮小グレースケール化
   function computeGray() {
     const vw = video.videoWidth, vh = video.videoHeight;
@@ -286,13 +307,44 @@
     return { g, w: DW, h: dh, scaleX: vw / DW, scaleY: vh / dh };
   }
 
+  // 整数シフト(dx,dy)での平均輝度差(SAD)。cur(x,y) ≈ prev(x-dx, y-dy)。
+  function sadAt(prev, cur, dx, dy, step) {
+    const w = cur.w, h = cur.h;
+    const ys = Math.max(0, dy), ye = Math.min(h, h + dy);
+    const xs = Math.max(0, dx), xe = Math.min(w, w + dx);
+    if (ye - ys < h * 0.4 || xe - xs < w * 0.4) return Infinity;
+    let sad = 0, cnt = 0;
+    for (let y = ys; y < ye; y += step) {
+      const cRow = y * w, pRow = (y - dy) * w;
+      for (let x = xs; x < xe; x += step) {
+        const d = cur.g[cRow + x] - prev.g[pRow + (x - dx)];
+        sad += d < 0 ? -d : d;
+        cnt++;
+      }
+    }
+    return cnt > 0 ? sad / cnt : Infinity;
+  }
+
+  // 放物線補間でSAD最小の小数位置を求める(サブピクセル精度)
+  function subPixel(sm, s0, sp) {
+    if (!isFinite(sm) || !isFinite(sp)) return 0;
+    const den = sm - 2 * s0 + sp;
+    if (den <= 0) return 0;
+    let s = 0.5 * (sm - sp) / den;
+    if (s > 0.5) s = 0.5; else if (s < -0.5) s = -0.5;
+    return s;
+  }
+
   // prev→cur の映像内コンテンツ移動量(dx,dy)を予測中心(pdx,pdy)まわりで探索。
-  // cur(x,y) ≈ prev(x-dx, y-dy)。戻り値は縮小px単位。
+  // 整数で粗探索 → 放物線補間でサブピクセル化。戻り値は縮小px単位(小数)。
   function register(prev, cur, pdx, pdy) {
     const w = cur.w, h = cur.h;
-    const winA = 18, winC = 8, step = 3;
+    const winA = 16, winC = 8, step = 3;
+    // 動きの連続性ペナルティ: 予測(前フレームの動き)から離れた候補に加点し、
+    // キーボード等の反復模様でSADが誤って小さくなる偽の最小点に飛ぶのを防ぐ。
+    const LAMBDA = 0.4;
     const cx = Math.round(pdx), cy = Math.round(pdy);
-    let best = Infinity, bdx = cx, bdy = cy;
+    let best = Infinity, bestRaw = Infinity, bdx = cx, bdy = cy;
     for (let dy = cy - winC; dy <= cy + winC; dy++) {
       const ys = Math.max(0, dy), ye = Math.min(h, h + dy);
       if (ye - ys < h * 0.4) continue;
@@ -309,12 +361,16 @@
           }
         }
         if (cnt > 0) {
-          const m = sad / cnt;
-          if (m < best) { best = m; bdx = dx; bdy = dy; }
+          const raw = sad / cnt;
+          const score = raw + LAMBDA * (Math.abs(dx - cx) + Math.abs(dy - cy));
+          if (score < best) { best = score; bestRaw = raw; bdx = dx; bdy = dy; }
         }
       }
     }
-    return { dx: bdx, dy: bdy, ok: best < REG_OK_SCORE };
+    // サブピクセル補間: 最小点の前後1pxの生SADから小数位置を推定
+    const subx = subPixel(sadAt(prev, cur, bdx - 1, bdy, step), bestRaw, sadAt(prev, cur, bdx + 1, bdy, step));
+    const suby = subPixel(sadAt(prev, cur, bdx, bdy - 1, step), bestRaw, sadAt(prev, cur, bdx, bdy + 1, step));
+    return { dx: bdx + subx, dy: bdy + suby, ok: bestRaw < REG_OK_SCORE };
   }
 
   // 左端だけアルファをフェードさせ、隣接スリットと線形クロスフェード
@@ -452,12 +508,15 @@
     }
     if (signA === 0) return;
 
+    // u = 現在のフレーム中央が対応するパノラマ上の位置(実解像度px)
     const u = signA * cameraAdvance;
-    if (u > progressU) progressU = u; // 単調進行(戻りは無視)
-    const deltaU = progressU - lastU;
+    if (u > progressU) progressU = u; // HUD表示用の最大到達量
+    const deltaU = u - lastU;
+    // 前回から stripAdvance 以上前進したら、その前進分を1スリットとして配置。
+    // 配置中心は u (フレーム中央の実位置) — ここを中点にするとズレて二重化する。
     if (deltaU >= stripAdvance()) {
-      drawStripAt(deltaU, lastU + deltaU / 2, cameraCross);
-      lastU = progressU;
+      drawStripAt(deltaU, u, cameraCross);
+      lastU = u;
     }
   }
 
@@ -540,6 +599,7 @@
     try {
       setStatus('カメラを準備中…');
       await ensureCamera();
+      await lockCameraSettings();
     } catch (e) {
       setStatus('初期化失敗: ' + e.message, 'error');
       return;
