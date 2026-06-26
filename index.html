@@ -184,6 +184,7 @@
   const AXIS_THRESH = 30;    // 自動検出: 主軸を確定する累積移動量(実解像度px)
   const MAX_COAST = 6;       // 位置合わせ失敗時に前回速度で補間し続ける最大フレーム数
   const REG_OK_SCORE = 30;   // 位置合わせ成功とみなす平均輝度差のしきい値(0-255)
+  const CROSS_DECAY = 0.9;   // 直交(ブレ)方向の累積を0へ引き戻す減衰。1に近いほど補正は効くがドリフトしやすい
 
   let stream = null;
   let capturing = false;
@@ -494,7 +495,9 @@
     const aShift = axis === 'x' ? fdx : fdy; // 進行方向のコンテンツ移動
     const cShift = axis === 'x' ? fdy : fdx; // 直交(ブレ)方向
     cameraAdvance += -aShift; // カメラ移動 = コンテンツ移動の逆
-    cameraCross += -cShift;
+    // 直交方向は「水平を保って回す」前提で0へ引き戻し、ノイズ/ローリングシャッター由来の
+    // 一方向ドリフト(出力が薄い帯に削られる原因)を防ぐ。短時間の手ブレ補正は維持される。
+    cameraCross = (cameraCross - cShift) * CROSS_DECAY;
 
     if (signA === 0 && Math.abs(cameraAdvance) > 6) signA = cameraAdvance > 0 ? 1 : -1;
 
@@ -557,8 +560,13 @@
   // 完了時: 全スリットが覆っている矩形だけにクロップ
   function autoCropOutput() {
     if (!outputCanvas || drawnCount === 0) return;
-    const top = Math.max(0, Math.floor(gInnerTop - canvasMinY));
-    const bot = Math.min(outputCanvas.height, Math.ceil(gInnerBot - canvasMinY));
+    let top = Math.max(0, Math.floor(gInnerTop - canvasMinY));
+    let bot = Math.min(outputCanvas.height, Math.ceil(gInnerBot - canvasMinY));
+    // 安全ガード: 縦ドリフトで重なり範囲が極端に狭い場合、薄い帯に削るより全高を残す
+    if (bot - top < 0.5 * outputHeight) {
+      top = 0;
+      bot = outputCanvas.height;
+    }
     const left = Math.max(0, Math.floor(gLeft));
     const right = Math.min(outputCanvas.width, Math.ceil(gRight));
     const newH = bot - top, newW = right - left;
