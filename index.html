@@ -108,8 +108,8 @@
     </div>
     <div class="row">
       <label for="featherRange">継ぎ目ブレンド</label>
-      <input type="range" id="featherRange" min="0" max="100" step="5" value="10">
-      <span class="value" id="featherVal">10%</span>
+      <input type="range" id="featherRange" min="0" max="100" step="5" value="30">
+      <span class="value" id="featherVal">30%</span>
     </div>
     <div class="row">
       <label for="lockChk">露出/ピントを固定 (スジ防止)</label>
@@ -182,7 +182,6 @@
 
   const DW = 240;            // 位置合わせ用の縮小幅(px) 大きいほど高精度
   const AXIS_THRESH = 30;    // 自動検出: 主軸を確定する累積移動量(実解像度px)
-  const MAX_COAST = 6;       // 位置合わせ失敗時に前回速度で補間し続ける最大フレーム数
   const REG_OK_SCORE = 30;   // 位置合わせ成功とみなす平均輝度差のしきい値(0-255)
   const CROSS_DECAY = 0.9;   // 直交(ブレ)方向の累積を0へ引き戻す減衰。1に近いほど補正は効くがドリフトしやすい
 
@@ -191,21 +190,23 @@
   let rafId = 0;
 
   // 位置合わせ
-  let grayCanvas = null;
-  let prevGray = null;       // {g:Float32Array, w, h, scaleX, scaleY}
-  let predDx = 0, predDy = 0;// 直前の検出シフト(縮小px) = 次フレームの予測中心
+  // アンカー方式: 「直前に置いたスリットのフレーム(=アンカー)」に対して現フレームを
+  // 直接マッチングし、その相対位置にスリットを置く。1フレームごとの誤差を足し込まず、
+  // スリットを置くたびにアンカーを更新するので累積ドリフトが断ち切られ、重なりが合う。
+  let grayCanvas = null;     // 縮小グレースケール作業用
+  let fullCanvas = null;     // 全解像度グレースケール作業用
+  let anchorDown = null;     // アンカーフレームの縮小グレースケール {g,w,h,scaleX,scaleY}
+  let anchorFull = null;     // アンカーフレームの全解像度グレースケール {g,w,h}
+  let predDx = 0, predDy = 0;// アンカーからの予測変位(縮小px) = 探索中心
   let coastCount = 0;
 
   // 連結状態
   let axis = 'x';            // 'x'(横回転) or 'y'(縦回転)
   let axisLocked = false;
-  let detAccX = 0, detAccY = 0; // 自動検出用の累積移動量(実解像度px)
-  let cameraAdvance = 0;     // 進行方向の累積カメラ移動(実解像度px)
-  let cameraCross = 0;       // 直交方向(ブレ)の累積移動(実解像度px)
   let signA = 0;             // +1/-1 進行方向の符号
-  let progressU = 0;         // 進行方向への単調進行量(px)
-  let lastU = 0;             // 直前にスリットを置いた進行量
-  let seeded = false;
+  let panAnchorX = 0;        // アンカーフレーム中央が対応するパノラマX(進行方向, 単調増加)
+  let panAnchorY = 0;        // アンカーフレーム中央が対応するパノラマY(直交方向)
+  let progressU = 0;         // HUD表示用の到達量(px)
   let drawnCount = 0;
   let stripDirection = 'horizontal';
 
@@ -306,6 +307,60 @@
       g[j] = img[i] * 0.299 + img[i + 1] * 0.587 + img[i + 2] * 0.114;
     }
     return { g, w: DW, h: dh, scaleX: vw / DW, scaleY: vh / dh };
+  }
+
+  // 現フレームを全解像度グレースケール化(スリット配置の精密マッチング用)
+  function computeGrayFull() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!fullCanvas) fullCanvas = document.createElement('canvas');
+    fullCanvas.width = vw;
+    fullCanvas.height = vh;
+    const c = fullCanvas.getContext('2d', { willReadFrequently: true });
+    c.drawImage(video, 0, 0);
+    const img = c.getImageData(0, 0, vw, vh).data;
+    const g = new Float32Array(vw * vh);
+    for (let i = 0, j = 0; j < g.length; i += 4, j++) {
+      g[j] = img[i] * 0.299 + img[i + 1] * 0.587 + img[i + 2] * 0.114;
+    }
+    return { g, w: vw, h: vh };
+  }
+
+  // 任意ステップでのSAD (全解像度の精密化用)
+  function sadAtXY(prev, cur, dx, dy, stepX, stepY) {
+    const w = cur.w, h = cur.h;
+    const ys = Math.max(0, dy), ye = Math.min(h, h + dy);
+    const xs = Math.max(0, dx), xe = Math.min(w, w + dx);
+    if (ye - ys < h * 0.4 || xe - xs < w * 0.4) return Infinity;
+    let sad = 0, cnt = 0;
+    for (let y = ys; y < ye; y += stepY) {
+      const cRow = y * w, pRow = (y - dy) * w;
+      for (let x = xs; x < xe; x += stepX) {
+        const d = cur.g[cRow + x] - prev.g[pRow + (x - dx)];
+        sad += d < 0 ? -d : d;
+        cnt++;
+      }
+    }
+    return cnt > 0 ? sad / cnt : Infinity;
+  }
+
+  // アンカー(prev)に対する現フレーム(cur)の精密な相対変位を、縮小段の推定値
+  // (cxF,cyF: 全解像度px)まわり±winで全解像度マッチングして求める。サブピクセル化。
+  function registerFull(prev, cur, cxF, cyF) {
+    const w = cur.w, h = cur.h;
+    const win = 5;
+    const stepX = Math.max(2, Math.floor(w / 220));
+    const stepY = Math.max(2, Math.floor(h / 160));
+    const cx = Math.round(cxF), cy = Math.round(cyF);
+    let best = Infinity, bdx = cx, bdy = cy;
+    for (let dy = cy - win; dy <= cy + win; dy++) {
+      for (let dx = cx - win; dx <= cx + win; dx++) {
+        const m = sadAtXY(prev, cur, dx, dy, stepX, stepY);
+        if (m < best) { best = m; bdx = dx; bdy = dy; }
+      }
+    }
+    const subx = subPixel(sadAtXY(prev, cur, bdx - 1, bdy, stepX, stepY), best, sadAtXY(prev, cur, bdx + 1, bdy, stepX, stepY));
+    const suby = subPixel(sadAtXY(prev, cur, bdx, bdy - 1, stepX, stepY), best, sadAtXY(prev, cur, bdx, bdy + 1, stepX, stepY));
+    return { dx: bdx + subx, dy: bdy + suby, ok: isFinite(best) };
   }
 
   // 整数シフト(dx,dy)での平均輝度差(SAD)。cur(x,y) ≈ prev(x-dx, y-dy)。
@@ -477,50 +532,20 @@
     hudFrames.textContent = 'フレーム: ' + drawnCount;
   }
 
-  // 測定した実解像度シフト(fdx,fdy)からカメラ移動を積算し、必要ならスリットを描く
-  function processMotion(fdx, fdy) {
-    if (!axisLocked) {
-      detAccX += fdx;
-      detAccY += fdy;
-      if (Math.abs(detAccX) > AXIS_THRESH || Math.abs(detAccY) > AXIS_THRESH) {
-        axis = Math.abs(detAccX) >= Math.abs(detAccY) ? 'x' : 'y';
-        axisLocked = true;
-        stripDirection = axis === 'x' ? 'horizontal' : 'vertical';
-        updateStripGuide();
-      } else {
-        return;
-      }
-    }
+  // アンカーを現フレームに更新する
+  function setAnchor(curDown, curFull) {
+    anchorDown = curDown;
+    anchorFull = curFull || computeGrayFull();
+    predDx = 0; predDy = 0;
+    coastCount = 0;
+  }
 
-    const aShift = axis === 'x' ? fdx : fdy; // 進行方向のコンテンツ移動
-    const cShift = axis === 'x' ? fdy : fdx; // 直交(ブレ)方向
-    cameraAdvance += -aShift; // カメラ移動 = コンテンツ移動の逆
-    // 直交方向は「水平を保って回す」前提で0へ引き戻し、ノイズ/ローリングシャッター由来の
-    // 一方向ドリフト(出力が薄い帯に削られる原因)を防ぐ。短時間の手ブレ補正は維持される。
-    cameraCross = (cameraCross - cShift) * CROSS_DECAY;
-
-    if (signA === 0 && Math.abs(cameraAdvance) > 6) signA = cameraAdvance > 0 ? 1 : -1;
-
-    if (!seeded) {
-      // 起点スリット
-      drawStripAt(stripAdvance(), 0, 0);
-      seeded = true;
-      lastU = 0;
-      progressU = 0;
-      return;
-    }
-    if (signA === 0) return;
-
-    // u = 現在のフレーム中央が対応するパノラマ上の位置(実解像度px)
-    const u = signA * cameraAdvance;
-    if (u > progressU) progressU = u; // HUD表示用の最大到達量
-    const deltaU = u - lastU;
-    // 前回から stripAdvance 以上前進したら、その前進分を1スリットとして配置。
-    // 配置中心は u (フレーム中央の実位置) — ここを中点にするとズレて二重化する。
-    if (deltaU >= stripAdvance()) {
-      drawStripAt(deltaU, u, cameraCross);
-      lastU = u;
-    }
+  function updateHud() {
+    progressText.textContent = drawnCount + '枚';
+    progressFill.style.width = Math.min(100, drawnCount * 1.5) + '%';
+    hudAngle.textContent = Math.round(progressU) + 'px';
+    hudAxis.textContent = '軸: ' + (axisLocked ? (axis === 'x' ? '横' : '縦') : '検出中')
+      + (signA ? (signA > 0 ? ' +' : ' -') : '');
   }
 
   function loop() {
@@ -529,32 +554,78 @@
     const vw = video.videoWidth;
     if (!vw) return;
     const cur = computeGray();
-    if (prevGray) {
-      const reg = register(prevGray, cur, predDx, predDy);
-      let mdx, mdy;
-      if (reg.ok) {
-        mdx = reg.dx; mdy = reg.dy;
-        predDx = reg.dx; predDy = reg.dy;
-        coastCount = 0;
-      } else if (coastCount < MAX_COAST) {
-        // 一時的なブレ/低テクスチャ: 直前の速度で短時間だけ補間
-        mdx = predDx * 0.85; mdy = predDy * 0.85;
-        predDx = mdx; predDy = mdy;
-        coastCount++;
-      } else {
-        // 手がかりが続かない(白壁など): 進行を止めて空白の引き伸ばしを防ぐ
-        mdx = 0; mdy = 0;
-        predDx *= 0.5; predDy *= 0.5;
-      }
-      processMotion(mdx * cur.scaleX, mdy * cur.scaleY);
 
-      progressText.textContent = drawnCount + '枚';
-      progressFill.style.width = Math.min(100, drawnCount * 1.5) + '%';
-      hudAngle.textContent = Math.round(progressU) + 'px';
-      hudAxis.textContent = '軸: ' + (axisLocked ? (axis === 'x' ? '横' : '縦') : '検出中')
-        + (signA ? (signA > 0 ? ' +' : ' -') : '');
+    // 最初のフレーム: アンカーを置く(明示モードなら起点スリットも描く)
+    if (!anchorDown) {
+      setAnchor(cur, computeGrayFull());
+      panAnchorX = 0; panAnchorY = 0;
+      if (axisLocked) drawStripAt(stripAdvance(), 0, 0);
+      return;
     }
-    prevGray = cur;
+
+    // 現フレームのアンカーからの変位(縮小px)。アンカーは直近なので変位は小さく直接測れる
+    const reg = register(anchorDown, cur, predDx, predDy);
+    let dxD, dyD;
+    if (reg.ok) {
+      dxD = reg.dx; dyD = reg.dy;
+      predDx = reg.dx; predDy = reg.dy;
+      coastCount = 0;
+    } else {
+      // 手がかり不足(暗所/平面): 直前の予測を保持してアンカーは進めず待つ
+      dxD = predDx; dyD = predDy;
+      coastCount++;
+      updateHud();
+      return;
+    }
+
+    const fdx = dxD * cur.scaleX, fdy = dyD * cur.scaleY; // アンカー→現フレームのコンテンツ移動(実px)
+
+    // 自動方向検出: 十分動いたら主軸を確定し、現フレームでアンカーを取り直して起点スリット
+    if (!axisLocked) {
+      if (Math.abs(fdx) > AXIS_THRESH || Math.abs(fdy) > AXIS_THRESH) {
+        axis = Math.abs(fdx) >= Math.abs(fdy) ? 'x' : 'y';
+        axisLocked = true;
+        stripDirection = axis === 'x' ? 'horizontal' : 'vertical';
+        updateStripGuide();
+        setAnchor(cur, computeGrayFull());
+        panAnchorX = 0; panAnchorY = 0;
+        drawStripAt(stripAdvance(), 0, 0);
+      }
+      updateHud();
+      return;
+    }
+
+    const advanceShift = axis === 'x' ? fdx : fdy; // コンテンツの進行方向移動
+    // カメラ前進量 = -コンテンツ移動。最初の有意な動きで符号を確定
+    if (signA === 0 && Math.abs(advanceShift) > 4) signA = (-advanceShift) > 0 ? 1 : -1;
+    if (signA === 0) { updateHud(); return; }
+
+    const directed = signA * (-advanceShift); // アンカーから進んだ量(>0で前進)
+    progressU = panAnchorX + Math.max(0, directed);
+
+    // stripAdvance 以上前進したら、全解像度でアンカーに対し精密マッチングして配置
+    if (directed >= stripAdvance()) {
+      const curFull = computeGrayFull();
+      const ref = registerFull(anchorFull, curFull, fdx, fdy);
+      const refAdvance = axis === 'x' ? ref.dx : ref.dy;
+      const refCross = axis === 'x' ? ref.dy : ref.dx;
+      const dirPx = signA * (-refAdvance); // 精密化した前進量
+      if (dirPx >= 2) {
+        // 現フレーム中央のパノラマ位置 = アンカー位置 + 前進量
+        const centerX = panAnchorX + dirPx;
+        // 直交位置: アンカー位置 + カメラの直交移動(-refCross)。水平前提で0へ引き戻し
+        const newCross = (panAnchorY - refCross) * CROSS_DECAY;
+        drawStripAt(dirPx, centerX, newCross);
+        panAnchorX = centerX;
+        panAnchorY = newCross;
+        progressU = centerX;
+        setAnchor(cur, curFull); // 次の基準は今置いたフレーム
+      } else {
+        // 精密化で前進が消えた(ほぼ静止): アンカーだけ更新
+        setAnchor(cur, curFull);
+      }
+    }
+    updateHud();
   }
 
   // 完了時: 全スリットが覆っている矩形だけにクロップ
@@ -584,17 +655,16 @@
   }
 
   function resetState() {
-    prevGray = null;
+    anchorDown = null;
+    anchorFull = null;
     predDx = 0; predDy = 0;
     coastCount = 0;
     axisLocked = modeSel.value !== 'auto';
     axis = modeSel.value === 'vertical' ? 'y' : 'x';
     stripDirection = axis === 'x' ? 'horizontal' : 'vertical';
-    detAccX = 0; detAccY = 0;
-    cameraAdvance = 0; cameraCross = 0;
     signA = 0;
-    progressU = 0; lastU = 0;
-    seeded = false;
+    panAnchorX = 0; panAnchorY = 0;
+    progressU = 0;
     drawnCount = 0;
     outputCanvas = null;
     outputCtx = null;
