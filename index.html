@@ -112,8 +112,8 @@
       <span class="value" id="featherVal">30%</span>
     </div>
     <div class="row">
-      <label for="lockChk">露出/ピントを固定 (スジ防止)</label>
-      <input type="checkbox" id="lockChk" checked>
+      <label for="lockChk">露出/ピントを固定 (スジ防止・一部端末のみ)</label>
+      <input type="checkbox" id="lockChk">
     </div>
     <div class="row">
       <label for="alignChk">縦方向のブレ補正</label>
@@ -276,18 +276,36 @@
     setStatus(`カメラ取得: ${video.videoWidth}×${video.videoHeight}`, 'ok');
   }
 
-  // 露出/フォーカス/ホワイトバランスを現在値で固定し、フレーム間の
+  // 露出/フォーカス/ホワイトバランスを「自動が収束した現在値」で固定し、フレーム間の
   // 明るさ・ピントの変動(継ぎ目の縦スジの原因)を抑える。対応端末のみ有効。
+  // 重要: manual を値なしで指定すると暗転する端末があるため、必ず現在値を添える。
   async function lockCameraSettings() {
     if (!lockChk.checked || !stream) return;
     const track = stream.getVideoTracks()[0];
     if (!track || !track.getCapabilities || !track.applyConstraints) return;
-    let caps = {};
-    try { caps = track.getCapabilities() || {}; } catch (e) { return; }
+    // 自動露出/フォーカスが落ち着くのを少し待ってから現在値を読む
+    await new Promise(r => setTimeout(r, 600));
+    let caps = {}, cur = {};
+    try {
+      caps = track.getCapabilities() || {};
+      cur = track.getSettings ? (track.getSettings() || {}) : {};
+    } catch (e) { return; }
     const advanced = [];
-    if (caps.exposureMode && caps.exposureMode.includes('manual')) advanced.push({ exposureMode: 'manual' });
-    if (caps.focusMode && caps.focusMode.includes('manual')) advanced.push({ focusMode: 'manual' });
-    if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes('manual')) advanced.push({ whiteBalanceMode: 'manual' });
+    if (caps.exposureMode && caps.exposureMode.includes('manual')) {
+      const e = { exposureMode: 'manual' };
+      if (cur.exposureTime != null && caps.exposureTime) e.exposureTime = cur.exposureTime;
+      advanced.push(e);
+    }
+    if (caps.focusMode && caps.focusMode.includes('manual')) {
+      const f = { focusMode: 'manual' };
+      if (cur.focusDistance != null && caps.focusDistance) f.focusDistance = cur.focusDistance;
+      advanced.push(f);
+    }
+    if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes('manual')) {
+      const w = { whiteBalanceMode: 'manual' };
+      if (cur.colorTemperature != null && caps.colorTemperature) w.colorTemperature = cur.colorTemperature;
+      advanced.push(w);
+    }
     if (!advanced.length) return;
     try { await track.applyConstraints({ advanced }); } catch (e) { /* 非対応端末は無視 */ }
   }
