@@ -115,6 +115,14 @@
       <span class="value" id="fovVal">67.0°</span>
     </div>
     <div class="row">
+      <label for="stopSel">終了条件</label>
+      <select id="stopSel">
+        <option value="closure">一周を自動検出 (推奨)</option>
+        <option value="fov">画角から換算した360°</option>
+        <option value="manual">手動 (停止ボタン)</option>
+      </select>
+    </div>
+    <div class="row">
       <label for="scaleSel">出力スケール</label>
       <select id="scaleSel">
         <option value="auto">自動 (面積上限)</option>
@@ -122,8 +130,6 @@
         <option value="0.75">75%</option>
         <option value="0.5">50%</option>
       </select>
-      <label for="autoStopChk" style="margin-left:auto">360°で自動停止</label>
-      <input type="checkbox" id="autoStopChk" checked>
     </div>
     <div class="calib" id="calibInfo">カメラ未取得</div>
     <div class="row">
@@ -208,7 +214,9 @@
     <p><b>撮り方 (縦一周):</b> スマホを水平に構えてカメラを<b>地面</b>に向けたところから始め、前後方向の水平軸まわりにゆっくり回します。カメラの向きが 地面 → 右の壁 → 天井 → 左の壁 → 地面 と一周すればOKです。360°に達すると自動停止します（少しだけ回りすぎたところで止まります。これは継ぎ目をつなぐためのオーバーラップです）。</p>
     <p><b>ループ画像の角度目盛り:</b> 左端(0°)が撮り始めの地面、25%が右、50%が天井、75%が左、右端(360°)でまた地面に戻ります。逆回り(地面→左→天井→右)で撮った場合は目盛りの左右が入れ替わるので、ビューアの「一周方向を反転」で合わせてください。</p>
     <p><b>継ぎ目がギザギザになるとき:</b> 「縦ズレを追従」を切ると、回転軸のわずかな傾きぶんが継ぎ目ごとの段差になります。基本は入れたままにしてください。それでも乱れる場合は回すのが速すぎます（スリット間隔より1フレームの移動量が大きいと位置合わせが外れます）。</p>
-    <p><b>画角の設定が精度を決めます:</b> 「360°」は画像から直接は分かりません。水平画角から焦点距離 f[px] を求め、<code>360° = 2πf px</code> として換算しています。画角が実機とずれていると一周の長さもずれます。まず既定値で撮り、②の「1周の長さ微調整」で継ぎ目が合う値を探してください。合ったときの画角がその端末の正解値です。</p>
+    <p><b>一周はどうやって判定しているか:</b> 既定の「一周を自動検出」では、撮り始めのフレームを覚えておき、戻ってきたところを画像照合で捕まえます。そのときのパノラマX座標がそのまま一周の長さです。<b>画角の設定値は撮影開始前の目安にしか使いません</b>（照合を始めるタイミングと、出力スケールの見積もりだけ）。撮影後に「相当する水平画角」が実測値として表示されるので、次回はそれを画角スライダに入れておくと進捗表示が最初から正確になります。</p>
+    <p><b>なぜ画角から換算すると外れるのか:</b> ①画角の設定値が実機とずれていれば <code>360° = 2πf px</code> という目盛りごと狂います。②相互相関はフレーム全体の平均移動量を返しますが、回転時のセンサ上の移動量は中心で <code>f·dθ</code>、周辺で <code>(f + a²/f)·dθ</code> と大きくなります。平均すると <code>f·dθ·(1 + tan²(半画角)/3)</code> になり、進行方向の半画角が 33.5° なら15%ほど多めに測ります。一周を実測すればどちらも消えます。</p>
+    <p><b>検出に失敗するとき:</b> 起点が真っ白な床や無地の壁だと照合の手がかりがありません。模様のある場所から撮り始めてください。検出できなかった場合は警告が出るので、戻ったところで「停止」を押せば帯状PNGは保存できます。</p>
     <p><b>目安の水平画角:</b> iPhone 標準カメラ 約68〜70°、超広角 約100〜106°、Android 標準 約65〜70°。ただし 16:9 で取得すると 4:3 より横画角は広く縦画角は狭くなります。</p>
     <p><b>視差 (パララックス) について:</b> このアルゴリズムは<b>カメラが回転だけしている</b>ことを前提にします。腕を大きく振り回すとレンズ自体が動き、近くの物と遠くの物がずれて継ぎ目が合いません。レンズの位置をなるべく動かさず、その場で向きだけ変えてください。</p>
     <p><b>滑らかにつなぐコツ:</b> 動画を撮るくらいの一定速度で。模様の少ない白い壁や無地の天井は位置合わせの手がかりが無いため、そこだけ進みが止まることがあります。</p>
@@ -226,7 +234,7 @@
   const fovRange = $('fovRange'), fovVal = $('fovVal');
   const intervalRange = $('intervalRange'), intervalVal = $('intervalVal');
   const featherRange = $('featherRange'), featherVal = $('featherVal');
-  const alignChk = $('alignChk'), autoCropChk = $('autoCropChk'), autoStopChk = $('autoStopChk');
+  const alignChk = $('alignChk'), autoCropChk = $('autoCropChk'), stopSel = $('stopSel');
   const deshearChk = $('deshearChk');
   const progressFill = $('progressFill'), progressText = $('progressText');
   const hudAxis = $('hudAxis'), hudAngle = $('hudAngle'), hudFrames = $('hudFrames');
@@ -253,6 +261,20 @@
   const STRIP_MARGIN = 1;    // サブピクセル配置で内容を欠けさせないためのスリット余白(px)
   const LOOP_OVERLAP_DEG = 14;   // 継ぎ目ブレンド用に余分に撮る角度
 
+  // 一周検出。画角から換算した「360°」は当てにならない:
+  //  (1) 画角の設定値が実機とずれていれば 2πf px という目盛りごと狂う。
+  //  (2) 相互相関はフレーム全体の平均移動量を返すが、回転時のセンサ上の移動量は
+  //      中心で f·dθ、周辺で (f + a²/f)·dθ。平均すると f·dθ·(1 + tan²(半画角)/3) となり
+  //      進行方向の半画角が 33.5° なら 15% ほど多めに測ってしまう。
+  // 起点フレームに戻ったことを画像で検出し、そのときのパノラマX座標をそのまま
+  // 一周の長さとする。スリットを置いたのと同じ座標系で測るので両方の誤差が消える。
+  const CLOSURE_MIN_FRAC = 0.55; // 推定一周長のこの割合を超えたら照合を始める
+  const CLOSURE_MAX_FRAC = 2.0;  // ここまでに見つからなければ諦める
+  const CLOSURE_HARD_FRAC = 3.0; // 暴走防止の強制停止
+  const CLOSURE_SAD = 42;        // 一周とみなす平均輝度差(露出変化を見込んで緩め)
+  const CLOSURE_CONFIRM = 6;     // 最小値を過ぎたと判断する連続フレーム数
+  const CLOSURE_WIN_ADV = 16, CLOSURE_WIN_CROSS = 10;   // 探索窓(縮小px)
+
   // 直交(縦)方向は実測値をそのまま追従する。かつて 0.9 を掛けて0へ引き戻していたが、
   // 引き戻し量 (1-λ)·(現在のドリフト) がそのまま継ぎ目の段差になる。定常状態では
   // λ の値に関係なく「1スリットあたりの縦ドリフト c」ぶん毎回ズレてのこぎり状になる。
@@ -277,9 +299,14 @@
   let progressU = 0, drawnCount = 0, stripDirection = 'horizontal';
 
   // 角度・スケール
-  let fPx = 0;          // 焦点距離(実解像度px)
+  let fPx = 0;          // 画角から推定した焦点距離(実解像度px)
   let outScale = 1;     // 出力スケール
   let capturedDeg = 0;
+
+  // 一周検出
+  let startGray = null;                  // 起点(パノラマX=0)のフレーム
+  let loopPx = 0, loopLocked = false, closureFailed = false;
+  let closureBest = Infinity, closureBestL = 0, closureRising = 0, closureTick = 0;
 
   // 出力キャンバス (撮影中は生の連結先、停止後はトリム済みの帯)
   let outputCanvas = null, outputCtx = null, outputHeight = 0, canvasMinY = 0;
@@ -324,7 +351,7 @@
     const vfov = 2 * Math.atan((vh / 2) / f) * DEG;
     calibInfo.textContent =
       `映像 ${vw}×${vh} / f = ${f.toFixed(0)}px / 垂直画角 ${vfov.toFixed(1)}°\n` +
-      `1周 = ${Math.round(loopReal)}px → 出力 ${Math.round(loopReal * s)}px (スケール ${(s * 100).toFixed(0)}%)`;
+      `1周 ≈ ${Math.round(loopReal)}px (推定) → 出力 ${Math.round(loopReal * s)}px (スケール ${(s * 100).toFixed(0)}%)`;
   }
 
   fovRange.addEventListener('input', () => { fovVal.textContent = (+fovRange.value).toFixed(1) + '°'; updateCalibInfo(); });
@@ -386,10 +413,12 @@
     gctx.drawImage(video, 0, 0, DW, dh);
     const img = gctx.getImageData(0, 0, DW, dh).data;
     const g = new Float32Array(DW * dh);
+    let sum = 0;
     for (let i = 0, j = 0; j < g.length; i += 4, j++) {
       g[j] = img[i] * 0.299 + img[i + 1] * 0.587 + img[i + 2] * 0.114;
+      sum += g[j];
     }
-    return { g, w: DW, h: dh, scaleX: vw / DW, scaleY: vh / dh };
+    return { g, w: DW, h: dh, mean: sum / g.length, scaleX: vw / DW, scaleY: vh / dh };
   }
 
   // 整数シフト(dx,dy)での平均輝度差(SAD)。cur(x,y) ≈ prev(x-dx, y-dy)。
@@ -460,6 +489,81 @@
     const subx = subPixel(sadAt(prev, cur, bdx - 1, bdy, step), bestRaw, sadAt(prev, cur, bdx + 1, bdy, step));
     const suby = subPixel(sadAt(prev, cur, bdx, bdy - 1, step), bestRaw, sadAt(prev, cur, bdx, bdy + 1, step));
     return { dx: bdx + subx, dy: bdy + suby, ok: bestRaw < REG_OK_SCORE };
+  }
+
+  // ---------- 一周検出 ----------
+  // 起点フレームと現フレームを照合する。進行方向のズレは 0 を中心に、直交方向は
+  // これまでの縦ドリフト量 (-panAnchorY) を中心に探索する。露出変化に耐えるよう
+  // 平均輝度差を打ち消してから SAD を取る。
+  function closureRegister(prev, cur, pdx, pdy) {
+    const w = cur.w, h = cur.h, step = 3;
+    const bias = cur.mean - prev.mean;
+    const wx = axis === 'x' ? CLOSURE_WIN_ADV : CLOSURE_WIN_CROSS;
+    const wy = axis === 'x' ? CLOSURE_WIN_CROSS : CLOSURE_WIN_ADV;
+    const cx = Math.round(pdx), cy = Math.round(pdy);
+    let best = Infinity, bdx = cx, bdy = cy;
+    for (let dy = cy - wy; dy <= cy + wy; dy++) {
+      const ys = Math.max(0, dy), ye = Math.min(h, h + dy);
+      if (ye - ys < h * 0.5) continue;
+      for (let dx = cx - wx; dx <= cx + wx; dx++) {
+        const xs = Math.max(0, dx), xe = Math.min(w, w + dx);
+        if (xe - xs < w * 0.5) continue;
+        let sad = 0, cnt = 0;
+        for (let y = ys; y < ye; y += step) {
+          const cRow = y * w, pRow = (y - dy) * w;
+          for (let x = xs; x < xe; x += step) {
+            const d = (cur.g[cRow + x] - bias) - prev.g[pRow + (x - dx)];
+            sad += d < 0 ? -d : d;
+            cnt++;
+          }
+        }
+        if (cnt > 0) {
+          const raw = sad / cnt;
+          if (raw < best) { best = raw; bdx = dx; bdy = dy; }
+        }
+      }
+    }
+    return { dx: bdx, dy: bdy, sad: best };
+  }
+
+  // 現フレームの中心が起点と同じ方向を向いていれば、その中心のパノラマX = 一周の長さ。
+  // 一般には、起点→現フレームの内容移動量を d としたとき L = P + signA·d。
+  function maybeDetectClosure(cur, P) {
+    if (loopLocked || closureFailed || !startGray || fPx <= 0) return;
+    const est = 2 * Math.PI * fPx;
+    if (P < CLOSURE_MIN_FRAC * est) return;
+    if (P > CLOSURE_MAX_FRAC * est) {
+      closureFailed = true;
+      setStatus('一周を検出できませんでした（手がかりの少ない被写体かも）。戻ったところで「停止」を押してください。', 'warn');
+      return;
+    }
+    // 遠いうちは2フレームに1回。谷に入ったら毎フレーム見て最小値を取り逃さない。
+    if (closureBest > CLOSURE_SAD && (closureTick++ & 1) !== 0) return;
+
+    const sX = cur.scaleX, sY = cur.scaleY;
+    const pdx = axis === 'x' ? 0 : (-panAnchorY) / sX;
+    const pdy = axis === 'x' ? (-panAnchorY) / sY : 0;
+    const r = closureRegister(startGray, cur, pdx, pdy);
+    const dAdv = axis === 'x' ? r.dx * sX : r.dy * sY;
+    const L = P + signA * dAdv;
+
+    if (r.sad < closureBest) {
+      closureBest = r.sad; closureBestL = L; closureRising = 0;
+    } else if (closureBest < CLOSURE_SAD && r.sad > closureBest * 1.1) {
+      closureRising++;   // 明確な谷を通り過ぎた場合だけ数える
+    }
+
+    // 谷を通り過ぎたと判断できたら確定。ノイズで rising が伸びない場合の保険として、
+    // 推定closure点を 10° 分すぎたら打ち切って確定する。
+    const passedBy = closureBestL > 0 && progressU > closureBestL * (1 + 10 / 360);
+    if ((closureRising >= CLOSURE_CONFIRM || passedBy) && closureBest < CLOSURE_SAD &&
+        closureBestL > 0.5 * est && closureBestL < 1.9 * est) {
+      loopPx = closureBestL;
+      loopLocked = true;
+      const fMeas = loopPx / (2 * Math.PI);
+      const fovMeas = 2 * Math.atan((video.videoWidth / 2) / fMeas) * DEG;
+      setStatus(`一周を検出: ${Math.round(loopPx)}px (実測 f=${fMeas.toFixed(0)}px / 水平画角 ${fovMeas.toFixed(1)}°)`, 'ok');
+    }
   }
 
   // ---------- スリット連結 ----------
@@ -593,13 +697,15 @@
     drawnCount++;
   }
 
-  function currentDeg() { return fPx > 0 ? progressU / fPx * DEG : 0; }
+  // 一周を検出済みならその実測長を、まだなら画角からの推定長を目盛りに使う。
+  function loopLengthPx() { return loopLocked ? loopPx : (fPx > 0 ? 2 * Math.PI * fPx : 0); }
+  function currentDeg() { const L = loopLengthPx(); return L > 0 ? progressU / L * 360 : 0; }
 
   function updateHud() {
     const deg = currentDeg();
     hudFrames.textContent = drawnCount + '枚';
-    hudAngle.textContent = deg.toFixed(1) + '°';
-    progressText.textContent = `${deg.toFixed(1)}° / 360°`;
+    hudAngle.textContent = deg.toFixed(1) + '°' + (loopLocked ? '' : '?');
+    progressText.textContent = `${deg.toFixed(1)}° / 360°` + (loopLocked ? ' (実測)' : ' (画角からの推定)');
     progressFill.style.width = Math.min(100, deg / 360 * 100) + '%';
     hudAxis.textContent = '軸: ' + (axisLocked ? (axis === 'x' ? '横' : '縦') : '検出中')
       + (signA ? (signA > 0 ? ' +' : ' -') : '');
@@ -654,6 +760,7 @@
         accX = 0; accY = 0;
         panAnchorX = 0; panAnchorY = 0; progressU = 0;
         drawStripAt(stripAdvance(), 0, 0);
+        startGray = cur;             // パノラマX=0 のフレーム。一周検出の基準。
       }
       updateHud();
       return;
@@ -661,6 +768,7 @@
 
     const directed = signA * (-advShift);
     progressU = panAnchorX + Math.max(0, directed);
+    maybeDetectClosure(cur, progressU);
 
     if (directed >= stripAdvance()) {
       const sX = cur.scaleX, sY = cur.scaleY;
@@ -689,7 +797,14 @@
     }
     updateHud();
 
-    if (autoStopChk.checked && currentDeg() >= 360 + LOOP_OVERLAP_DEG) stop();
+    const mode = stopSel.value;
+    const done = currentDeg() >= 360 + LOOP_OVERLAP_DEG;
+    // closure モードでは「一周を実測できた」ことが停止の前提。推定値では止めない。
+    if (mode === 'fov' && done) stop();
+    else if (mode === 'closure' && loopLocked && done) stop();
+    else if (fPx > 0 && progressU > CLOSURE_HARD_FRAC * 2 * Math.PI * fPx) {
+      stop();   // 暴走防止
+    }
   }
 
   // ---------- 帯の傾き補正 (せん断) ----------
@@ -768,12 +883,14 @@
   // その先の「尻尾」(=同じ景色をもう一度撮ったぶん)を先頭にクロスフェードして
   // 左右端が連続するループ画像にする。
   function buildLoop() {
-    if (!outputCanvas || fPx <= 0) return null;
+    if (!outputCanvas || loopLengthPx() <= 0) return null;
     const adj = +loopAdj.value;
-    const fAdj = fPx * outScale * (1 + adj / 100);
+    // 一周の長さ(スケール後px)。実測できていればそれを、なければ画角からの推定を使う。
+    const baseW = loopLengthPx() * outScale * (1 + adj / 100);
+    const fAdj = baseW / (2 * Math.PI);
     const src = outputCanvas;
 
-    let W = Math.round(2 * Math.PI * fAdj);
+    let W = Math.round(baseW);
     let clamped = false;
     if (W > src.width) { W = src.width; clamped = true; }
     const tailAvail = src.width - W;
@@ -800,10 +917,11 @@
     loopWrap.appendChild(out);
     loopSize.textContent = `${W} × ${H}`;
 
-    const impliedFov = 2 * Math.atan((video.videoWidth / 2) / (fPx * (1 + adj / 100))) * DEG;
+    const impliedFov = 2 * Math.atan((video.videoWidth / 2) / (fAdj / outScale)) * DEG;
     loopInfo.textContent =
-      `幅 ${W}px = 360° / 継ぎ目ブレンド ${blend}px (${(blend / fAdj * DEG).toFixed(1)}°) / ` +
-      `この設定に相当する水平画角 ${impliedFov.toFixed(1)}°`;
+      `幅 ${W}px = 360° (${loopLocked ? '一周を実測' : '画角からの推定'}) / ` +
+      `継ぎ目ブレンド ${blend}px (${(blend / fAdj * DEG).toFixed(1)}°) / ` +
+      `相当する水平画角 ${impliedFov.toFixed(1)}° ← 次回はこの値を画角スライダに`;
     loopInfo.className = 'status' + (clamped || blend === 0 ? ' warn' : '');
     if (clamped) loopInfo.textContent += ' — 撮影量が足りず切り詰めました。微調整を負の方向へ。';
     else if (blend === 0) loopInfo.textContent += ' — 尻尾が無くブレンドできていません。';
@@ -999,6 +1117,8 @@
     progressU = 0; drawnCount = 0; capturedDeg = 0;
     outputCanvas = null; outputCtx = null; outputHeight = 0; canvasMinY = 0;
     centerYVirtual = 0; stripCenterY = 0; stripH = 0; placed = []; loopCanvas = null;
+    startGray = null; loopPx = 0; loopLocked = false; closureFailed = false;
+    closureBest = Infinity; closureBestL = 0; closureRising = 0; closureTick = 0;
     gInnerTop = -Infinity; gInnerBot = Infinity;
     gOuterTop = Infinity; gOuterBot = -Infinity;
     gLeft = Infinity; gRight = -Infinity;
@@ -1033,9 +1153,11 @@
     capturing = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    setStatus(autoStopChk.checked
-      ? `撮影中: ゆっくり一定速度で一周してください (${360 + LOOP_OVERLAP_DEG}° で自動停止)`
-      : '撮影中: ゆっくり一定速度で一周してください');
+    setStatus({
+      closure: '撮影中: ゆっくり一定速度で一周してください (起点に戻ったのを検出して自動停止)',
+      fov: `撮影中: 画角から換算して ${360 + LOOP_OVERLAP_DEG}° で自動停止します`,
+      manual: '撮影中: 起点に戻ったら「停止」を押してください',
+    }[stopSel.value]);
     rafId = requestAnimationFrame(loop);
   }
 
@@ -1057,16 +1179,18 @@
     downloadBtn.disabled = false;
     resetBtn.disabled = false;
     const tiltMsg = tilt ? ` / 帯の傾き ${tilt.toFixed(2)}° を補正` : '';
+    const canLoop = loopLocked ? (progressU >= loopPx) : (capturedDeg >= 360);
 
-    if (capturedDeg >= 360) {
+    if (canLoop) {
       loopSection.hidden = false;
       const built = buildLoop();
       if (built) showViewer(built);
-      setStatus(`撮影終了: ${capturedDeg.toFixed(1)}° / ${drawnCount}スリット / 帯 ${outputCanvas.width}×${outputCanvas.height}${tiltMsg}`, 'ok');
+      const how = loopLocked ? '一周を実測' : '画角からの推定';
+      setStatus(`撮影終了: ${capturedDeg.toFixed(1)}° (${how}) / ${drawnCount}スリット / 帯 ${outputCanvas.width}×${outputCanvas.height}${tiltMsg}`, 'ok');
     } else {
       loopSection.hidden = true;
       viewerSection.hidden = true;
-      setStatus(`撮影終了: ${capturedDeg.toFixed(1)}° — 360°に届いていないためループ画像とビューアは作れません。帯状PNGは保存できます。`, 'warn');
+      setStatus(`撮影終了: ${capturedDeg.toFixed(1)}° — 一周に届いていないためループ画像とビューアは作れません。帯状PNGは保存できます。`, 'warn');
     }
   }
 
