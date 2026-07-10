@@ -1,18 +1,21 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#111">
-<title>360° パノラマ撮影</title>
+<title>360° パノラマ撮影 (縦一周)</title>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #eee;
     font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif; }
   body { display: flex; flex-direction: column; min-height: 100vh; }
   header { padding: 10px 14px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; }
   header h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
   main { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+  section { display: flex; flex-direction: column; gap: 8px; }
   .preview-wrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000;
     border-radius: 8px; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -31,39 +34,48 @@
   .progress-bar { height: 8px; background: #222; border-radius: 4px; overflow: hidden; position: relative; }
   .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #0c8, #0ac);
     transition: width 0.1s linear; }
-  .progress-label { display: flex; justify-content: space-between; font-size: 12px;
-    color: #aaa; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+  .progress-label { display: flex; justify-content: space-between; align-items: baseline;
+    gap: 10px; font-size: 12px; color: #aaa; font-variant-numeric: tabular-nums; }
+  .progress-label b { color: #ddd; font-size: 13px; font-weight: 600; }
   .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   button { padding: 14px 12px; font-size: 15px; font-weight: 600; border-radius: 8px;
     border: none; background: #2a2a2a; color: #eee; cursor: pointer; transition: opacity 0.15s; }
   button:active { opacity: 0.7; }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   button.primary { background: #d33; color: #fff; }
-  button.primary.active { background: #555; }
   button.secondary { background: #444; }
   .settings { background: #1a1a1a; padding: 10px 12px; border-radius: 8px;
     display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-  .row label { color: #bbb; }
+  .row label { color: #bbb; white-space: nowrap; }
   .row select, .row input[type=range] { background: #2a2a2a; color: #eee; border: 1px solid #333;
     border-radius: 4px; padding: 4px 6px; font-size: 13px; }
   .row input[type=range] { flex: 1; min-width: 0; padding: 0; }
-  .row .value { color: #eee; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
-  .output-wrap { background: #000; border-radius: 8px; padding: 8px; overflow: auto; max-height: 50vh; }
-  .output-wrap canvas { display: block; max-width: 100%; height: auto; image-rendering: auto; }
+  .row .value { color: #eee; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+  .calib { background: #16201c; border: 1px solid #234; border-radius: 6px; padding: 6px 10px;
+    font-size: 12px; color: #9cc; font-variant-numeric: tabular-nums; line-height: 1.6;
+    white-space: pre-line; }
+  .output-wrap { background: #000; border-radius: 8px; padding: 8px; overflow: auto; max-height: 40vh; }
+  .output-wrap canvas { display: block; max-width: 100%; height: auto; }
   .output-wrap.empty { display: flex; align-items: center; justify-content: center;
     min-height: 80px; color: #555; font-size: 13px; }
-  .status { font-size: 12px; color: #888; padding: 4px 2px; min-height: 1.2em; }
+  #viewer { display: block; width: 100%; aspect-ratio: 16 / 9; background: #0e0e0f;
+    border-radius: 8px; touch-action: none; cursor: grab; }
+  #viewer:active { cursor: grabbing; }
+  .toggles { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: #bbb; }
+  .toggles label { display: flex; align-items: center; gap: 5px; }
+  .status { font-size: 12px; color: #888; padding: 4px 2px; min-height: 1.2em; line-height: 1.5; }
   .status.error { color: #f66; }
   .status.ok { color: #6c6; }
+  .status.warn { color: #ec9; }
   details { background: #1a1a1a; padding: 8px 12px; border-radius: 8px; font-size: 12px; color: #aaa; }
   details summary { cursor: pointer; color: #ccc; }
-  details p { margin: 6px 0; }
+  details p { margin: 6px 0; line-height: 1.7; }
   details code { background: #2a2a2a; padding: 1px 4px; border-radius: 3px; }
 </style>
 </head>
 <body>
-<header><h1>360° パノラマ撮影</h1></header>
+<header><h1>360° パノラマ撮影 — 天井→右→地面→左→天井</h1></header>
 <main>
   <div class="preview-wrap">
     <video id="preview" playsinline muted autoplay></video>
@@ -72,16 +84,16 @@
       <div class="strip-guide" id="stripGuide"></div>
       <div class="hud">
         <span id="hudAxis">軸: -</span>
-        <span id="hudFrames">フレーム: 0</span>
-        <span id="hudAngle">0px</span>
+        <span id="hudFrames">0枚</span>
+        <span id="hudAngle">0.0°</span>
       </div>
     </div>
   </div>
 
   <div>
     <div class="progress-label">
-      <span>進捗</span>
-      <span id="progressText">0枚</span>
+      <span>進捗 (360°まで)</span>
+      <span id="progressText">0.0° / 360°</span>
     </div>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
   </div>
@@ -93,15 +105,32 @@
 
   <div class="settings">
     <div class="row">
+      <label for="fovRange">カメラ水平画角</label>
+      <input type="range" id="fovRange" min="40" max="110" step="0.5" value="67">
+      <span class="value" id="fovVal">67.0°</span>
+    </div>
+    <div class="row">
+      <label for="scaleSel">出力スケール</label>
+      <select id="scaleSel">
+        <option value="auto">自動 (面積上限)</option>
+        <option value="1">100%</option>
+        <option value="0.75">75%</option>
+        <option value="0.5">50%</option>
+      </select>
+      <label for="autoStopChk" style="margin-left:auto">360°で自動停止</label>
+      <input type="checkbox" id="autoStopChk" checked>
+    </div>
+    <div class="calib" id="calibInfo">カメラ未取得</div>
+    <div class="row">
       <label for="modeSel">回転方向</label>
       <select id="modeSel">
         <option value="auto">自動検出</option>
-        <option value="vertical">縦回転 (空↔地面)</option>
+        <option value="vertical">縦回転 (天井↔地面)</option>
         <option value="horizontal">横回転 (左右)</option>
       </select>
     </div>
     <div class="row">
-      <label for="intervalRange">スリット間隔 (細かさ)</label>
+      <label for="intervalRange">スリット間隔</label>
       <input type="range" id="intervalRange" min="4" max="60" step="1" value="12">
       <span class="value" id="intervalVal">12px</span>
     </div>
@@ -109,10 +138,6 @@
       <label for="featherRange">継ぎ目ブレンド</label>
       <input type="range" id="featherRange" min="0" max="100" step="5" value="30">
       <span class="value" id="featherVal">30%</span>
-    </div>
-    <div class="row">
-      <label for="lockChk">露出/ピントを固定 (スジ防止・一部端末のみ)</label>
-      <input type="checkbox" id="lockChk">
     </div>
     <div class="row">
       <label for="alignChk">縦方向のブレ補正</label>
@@ -126,122 +151,171 @@
 
   <div class="status" id="status">「開始」を押すとカメラの使用許可を求めます。</div>
 
-  <div>
-    <div class="progress-label">
-      <span>出力プレビュー</span>
-      <span id="outputSize">-</span>
-    </div>
+  <section>
+    <div class="progress-label"><b>① 帯状パノラマ (生の連結結果)</b><span id="outputSize">-</span></div>
     <div class="output-wrap empty" id="outputWrap"><span>未撮影</span></div>
-    <div class="controls" style="margin-top: 8px;">
-      <button id="downloadBtn" class="secondary" disabled>PNG保存</button>
+    <div class="controls">
+      <button id="downloadBtn" class="secondary" disabled>帯状PNGを保存</button>
       <button id="resetBtn" class="secondary" disabled>リセット</button>
     </div>
-  </div>
+  </section>
+
+  <section id="loopSection" hidden>
+    <div class="progress-label"><b>② ループ画像 (360°・継ぎ目ブレンド済み)</b><span id="loopSize">-</span></div>
+    <div class="output-wrap" id="loopWrap"></div>
+    <div class="row">
+      <label for="loopAdj">1周の長さ微調整</label>
+      <input type="range" id="loopAdj" min="-8" max="3" step="0.1" value="0">
+      <span class="value" id="loopAdjVal">0.0%</span>
+    </div>
+    <div class="status" id="loopInfo"></div>
+    <div class="controls">
+      <button id="loopDownloadBtn" class="secondary">ループPNGを保存</button>
+      <button id="loopResetAdj" class="secondary">微調整をリセット</button>
+    </div>
+  </section>
+
+  <section id="viewerSection" hidden>
+    <div class="progress-label"><b>③ 360°ビューア</b><span>ドラッグで回転 / ホイール・ピンチでズーム</span></div>
+    <canvas id="viewer"></canvas>
+    <div class="toggles">
+      <label><input type="checkbox" id="autoSpin" checked> 自動回転</label>
+      <label><input type="checkbox" id="flipSweepChk"> 一周方向を反転</label>
+      <label><input type="checkbox" id="flipPerpChk"> 帯の上下を反転</label>
+    </div>
+    <div class="status" id="viewerStatus"></div>
+  </section>
 
   <details>
     <summary>使い方とトラブルシュート</summary>
     <p><b>必須条件:</b> HTTPS または <code>localhost</code> で開いてください。HTTP配信ではカメラが動きません。</p>
-    <p><b>使い方:</b> ①回転方向を選ぶ（自動検出のままでOK） ②開始を押す ③中央の十字を狙ったまま、<b>ゆっくり一定速度で</b>回転 ④「停止」ボタンで終了。</p>
-    <p><b>滑らかにつなぐコツ:</b> 速く振りすぎるとブレて位置合わせが外れます。動画を撮るくらいの一定速度で。模様の少ない白い壁などは位置合わせの手がかりが無いため、そこだけ進みが止まることがあります。</p>
-    <p><b>スリット間隔:</b> 小さくするほど細かく貼り合わせて滑らかになります（その分処理は増えます）。継ぎ目が気になる場合はブレンドを上げてください。</p>
-    <p><b>仕組み:</b> ジャイロは使わず、毎フレームの映像を画像マッチング（相互相関）で位置合わせし、実際に動いたぶんだけ中央スリットを切り出して連結します。これにより角度推定のドリフトによる空白・ズレが起きず、映像のように連続したパノラマになります。</p>
+    <p><b>撮り方 (縦一周):</b> スマホを水平に構えてカメラを<b>天井</b>に向け、前後方向の水平軸まわりにゆっくり回します。カメラの向きが 天井 → 右の壁 → 地面 → 左の壁 → 天井 と一周すればOKです。360°に達すると自動停止します（少しだけ回りすぎたところで止まります。これは継ぎ目をつなぐためのオーバーラップです）。</p>
+    <p><b>画角の設定が精度を決めます:</b> 「360°」は画像から直接は分かりません。水平画角から焦点距離 f[px] を求め、<code>360° = 2πf px</code> として換算しています。画角が実機とずれていると一周の長さもずれます。まず既定値で撮り、②の「1周の長さ微調整」で継ぎ目が合う値を探してください。合ったときの画角がその端末の正解値です。</p>
+    <p><b>目安の水平画角:</b> iPhone 標準カメラ 約68〜70°、超広角 約100〜106°、Android 標準 約65〜70°。ただし 16:9 で取得すると 4:3 より横画角は広く縦画角は狭くなります。</p>
+    <p><b>視差 (パララックス) について:</b> このアルゴリズムは<b>カメラが回転だけしている</b>ことを前提にします。腕を大きく振り回すとレンズ自体が動き、近くの物と遠くの物がずれて継ぎ目が合いません。レンズの位置をなるべく動かさず、その場で向きだけ変えてください。</p>
+    <p><b>滑らかにつなぐコツ:</b> 動画を撮るくらいの一定速度で。模様の少ない白い壁や無地の天井は位置合わせの手がかりが無いため、そこだけ進みが止まることがあります。</p>
+    <p><b>仕組み:</b> ジャイロは使いません。毎フレームの映像を縮小グレースケール化して相互相関(SAD最小化)で実際の移動量を測り、動いたぶんだけ中央スリットを切り出して連結します。角度推定のドリフトによる空白・ズレが起きません。累積誤差はスリットを置くたびにアンカーを張り直すことで断ち切っています。</p>
   </details>
 </main>
 
 <script>
 (() => {
-  const video = document.getElementById('preview');
-  const startBtn = document.getElementById('startBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  const downloadBtn = document.getElementById('downloadBtn');
-  const resetBtn = document.getElementById('resetBtn');
-  const modeSel = document.getElementById('modeSel');
-  const intervalRange = document.getElementById('intervalRange');
-  const intervalVal = document.getElementById('intervalVal');
-  const featherRange = document.getElementById('featherRange');
-  const featherVal = document.getElementById('featherVal');
-  const alignChk = document.getElementById('alignChk');
-  const lockChk = document.getElementById('lockChk');
-  const autoCropChk = document.getElementById('autoCropChk');
-  const progressFill = document.getElementById('progressFill');
-  const progressText = document.getElementById('progressText');
-  const hudAxis = document.getElementById('hudAxis');
-  const hudAngle = document.getElementById('hudAngle');
-  const hudFrames = document.getElementById('hudFrames');
-  const stripGuide = document.getElementById('stripGuide');
-  const statusEl = document.getElementById('status');
-  const outputWrap = document.getElementById('outputWrap');
-  const outputSize = document.getElementById('outputSize');
+  const $ = id => document.getElementById(id);
+  const video = $('preview');
+  const startBtn = $('startBtn'), stopBtn = $('stopBtn');
+  const downloadBtn = $('downloadBtn'), resetBtn = $('resetBtn');
+  const modeSel = $('modeSel'), scaleSel = $('scaleSel');
+  const fovRange = $('fovRange'), fovVal = $('fovVal');
+  const intervalRange = $('intervalRange'), intervalVal = $('intervalVal');
+  const featherRange = $('featherRange'), featherVal = $('featherVal');
+  const alignChk = $('alignChk'), autoCropChk = $('autoCropChk'), autoStopChk = $('autoStopChk');
+  const progressFill = $('progressFill'), progressText = $('progressText');
+  const hudAxis = $('hudAxis'), hudAngle = $('hudAngle'), hudFrames = $('hudFrames');
+  const stripGuide = $('stripGuide'), statusEl = $('status'), calibInfo = $('calibInfo');
+  const outputWrap = $('outputWrap'), outputSize = $('outputSize');
+  const loopSection = $('loopSection'), loopWrap = $('loopWrap'), loopSize = $('loopSize');
+  const loopAdj = $('loopAdj'), loopAdjVal = $('loopAdjVal'), loopInfo = $('loopInfo');
+  const loopDownloadBtn = $('loopDownloadBtn'), loopResetAdj = $('loopResetAdj');
+  const viewerSection = $('viewerSection'), viewerCanvas = $('viewer'), viewerStatus = $('viewerStatus');
+  const autoSpin = $('autoSpin'), flipSweepChk = $('flipSweepChk'), flipPerpChk = $('flipPerpChk');
 
   // ===== 画像マッチング型パノラマ生成 =====
   // ジャイロは一切使わない。毎フレームの映像を縮小グレースケール化し、
   // 直前フレームとの相互相関(SAD最小化)で実際の移動量(dx,dy)を測定。
   // 「実際に動いたぶん」だけ中央スリットを切り出して連結するため、
   // 角度推定のドリフトに起因する空白・ズレが起きず滑らかにつながる。
+  //
+  // 角度は画角(FOV)から換算する。焦点距離 f = (vw/2) / tan(hfov/2) [px] とすると、
+  // センサ中央付近の変位 d[px] は回転角 dθ に対して d ≒ f·dθ。よって 360° = 2πf px。
 
   const DW = 240;            // 位置合わせ用の縮小幅(px) 大きいほど高精度
   const AXIS_THRESH = 30;    // 自動検出: 主軸を確定する累積移動量(実解像度px)
   const REG_OK_SCORE = 30;   // 位置合わせ成功とみなす平均輝度差のしきい値(0-255)
-  const CROSS_DECAY = 0.9;   // 直交(ブレ)方向の累積を0へ引き戻す減衰。1に近いほど補正は効くがドリフトしやすい
+  const CROSS_DECAY = 0.9;   // 直交(ブレ)方向の累積を0へ引き戻す減衰
+  const LOOP_OVERLAP_DEG = 14;   // 継ぎ目ブレンド用に余分に撮る角度
+  const BLEND_DEG = 8;           // 継ぎ目のクロスフェード幅(角度)
+  // 出力キャンバスの面積上限。拡張時に一時バッファへ丸ごと複製するのでピークは倍になる。
+  // iOS Safari のキャンバス面積上限(約16.7Mpx)を踏まえて余裕を持たせる。
+  const MAX_OUT_AREA = 8e6;
+  const MAX_OUT_DIM = 16000;     // 出力キャンバスの一辺の上限
+  const DEG = 180 / Math.PI;
 
-  let stream = null;
-  let capturing = false;
-  let rafId = 0;
+  let stream = null, capturing = false, rafId = 0;
 
-  // 位置合わせ
-  // アンカー方式: 「直前に置いたスリットのフレーム(=アンカー)」に対して現フレームを
-  // 直接マッチングし、その相対位置にスリットを置く。1フレームごとの誤差を足し込まず、
-  // スリットを置くたびにアンカーを更新するので累積ドリフトが断ち切られ、重なりが合う。
-  let grayCanvas = null;     // 縮小グレースケール作業用
-  let fullCanvas = null;     // 全解像度グレースケール作業用
-  let anchorDown = null;     // アンカーフレームの縮小グレースケール {g,w,h,scaleX,scaleY}
-  let anchorFull = null;     // アンカーフレームの全解像度グレースケール {g,w,h}
-  let predDx = 0, predDy = 0;// アンカーからの予測変位(縮小px) = 探索中心
-  let coastCount = 0;
+  // 位置合わせ (アンカー方式)
+  let grayCanvas = null, prevDown = null, anchorDown = null;
+  let predDx = 0, predDy = 0;
+  let accX = 0, accY = 0, detX = 0, detY = 0;
 
-  // 連結状態
-  let axis = 'x';            // 'x'(横回転) or 'y'(縦回転)
-  let axisLocked = false;
-  let signA = 0;             // +1/-1 進行方向の符号
-  let panAnchorX = 0;        // アンカーフレーム中央が対応するパノラマX(進行方向, 単調増加)
-  let panAnchorY = 0;        // アンカーフレーム中央が対応するパノラマY(直交方向)
-  let progressU = 0;         // HUD表示用の到達量(px)
-  let drawnCount = 0;
-  let stripDirection = 'horizontal';
+  // 連結状態 (パノラマ座標: 進行方向Xは「実解像度px」、描画は outScale 倍して行う)
+  let axis = 'x', axisLocked = false, signA = 0;
+  let panAnchorX = 0, panAnchorY = 0;
+  let progressU = 0, drawnCount = 0, stripDirection = 'horizontal';
 
-  // 出力キャンバス
-  let outputCanvas = null;
-  let outputCtx = null;
-  let outputHeight = 0;
-  let canvasMinY = 0;        // 出力キャンバス[0,0]が仮想Y座標で何にあたるか
-  // 自動トリム用の被覆範囲(仮想座標)
-  let gInnerTop = -Infinity, gInnerBot = Infinity, gLeft = Infinity, gRight = -Infinity;
+  // 角度・スケール
+  let fPx = 0;          // 焦点距離(実解像度px)
+  let outScale = 1;     // 出力スケール
+  let capturedDeg = 0;
 
-  function setStatus(msg, kind = '') {
+  // 出力キャンバス (撮影中は生の連結先、停止後はトリム済みの帯)
+  let outputCanvas = null, outputCtx = null, outputHeight = 0, canvasMinY = 0;
+  let centerYVirtual = 0;   // 光軸中心が対応する仮想Y座標
+  let stripCenterY = 0;     // トリム後の帯における光軸中心Y
+  let gInnerTop = -Infinity, gInnerBot = Infinity;   // 全スリットが覆う範囲
+  let gOuterTop = Infinity, gOuterBot = -Infinity;   // いずれかのスリットが覆う範囲
+  let gLeft = Infinity, gRight = -Infinity;
+
+  let loopCanvas = null;
+
+  const setStatus = (msg, kind = '') => {
     statusEl.textContent = msg;
     statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  };
+
+  // ---------- 設定UI ----------
+  const stripAdvance = () => +intervalRange.value;
+  const fovDeg = () => +fovRange.value;
+  const focalFor = (vw, fov) => (vw / 2) / Math.tan(fov / 2 / DEG);
+
+  function autoScaleFor(vw, vh, f) {
+    const wReal = 2 * Math.PI * f * (1 + LOOP_OVERLAP_DEG / 360) + 200;
+    const hReal = Math.max(vw, vh);
+    const byArea = Math.sqrt(MAX_OUT_AREA / (wReal * hReal));
+    const byDim = MAX_OUT_DIM / wReal;
+    return Math.max(0.2, Math.min(1, byArea, byDim));
   }
 
-  intervalRange.addEventListener('input', () => {
-    intervalVal.textContent = intervalRange.value + 'px';
-    updateStripGuide();
-  });
+  function resolveScale(vw, vh, f) {
+    return scaleSel.value === 'auto' ? autoScaleFor(vw, vh, f) : +scaleSel.value;
+  }
+
+  function updateCalibInfo() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw) { calibInfo.textContent = 'カメラ未取得'; return; }
+    const f = focalFor(vw, fovDeg());
+    const s = resolveScale(vw, vh, f);
+    const loopReal = 2 * Math.PI * f;
+    const vfov = 2 * Math.atan((vh / 2) / f) * DEG;
+    calibInfo.textContent =
+      `映像 ${vw}×${vh} / f = ${f.toFixed(0)}px / 垂直画角 ${vfov.toFixed(1)}°\n` +
+      `1周 = ${Math.round(loopReal)}px → 出力 ${Math.round(loopReal * s)}px (スケール ${(s * 100).toFixed(0)}%)`;
+  }
+
+  fovRange.addEventListener('input', () => { fovVal.textContent = (+fovRange.value).toFixed(1) + '°'; updateCalibInfo(); });
+  scaleSel.addEventListener('change', updateCalibInfo);
+  intervalRange.addEventListener('input', () => { intervalVal.textContent = intervalRange.value + 'px'; updateStripGuide(); });
   featherRange.addEventListener('input', () => { featherVal.textContent = featherRange.value + '%'; });
   modeSel.addEventListener('change', () => {
-    if (modeSel.value === 'vertical') stripDirection = 'vertical';
-    else stripDirection = 'horizontal';
+    stripDirection = modeSel.value === 'vertical' ? 'vertical' : 'horizontal';
     updateStripGuide();
   });
 
-  function stripAdvance() { return +intervalRange.value; }
-
   function updateStripGuide() {
-    const dir = stripDirection;
     const wrap = video.parentElement;
     const w = wrap.clientWidth, h = wrap.clientHeight;
     const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
     const adv = stripAdvance();
-    if (dir === 'horizontal') {
+    if (stripDirection === 'horizontal') {
       const px = Math.max(8, (adv / vw) * w);
       stripGuide.style.cssText = `left:${(w - px) / 2}px; top:0; width:${px}px; height:${h}px;`;
     } else {
@@ -250,6 +324,7 @@
     }
   }
 
+  // ---------- カメラ ----------
   async function ensureCamera() {
     if (stream) return;
     const constraintsList = [
@@ -259,10 +334,8 @@
     ];
     let lastErr;
     for (const v of constraintsList) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
-        break;
-      } catch (e) { lastErr = e; }
+      try { stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false }); break; }
+      catch (e) { lastErr = e; }
     }
     if (!stream) throw lastErr || new Error('カメラ取得失敗');
     video.srcObject = stream;
@@ -272,44 +345,11 @@
     });
     await video.play().catch(() => {});
     updateStripGuide();
+    updateCalibInfo();
     setStatus(`カメラ取得: ${video.videoWidth}×${video.videoHeight}`, 'ok');
   }
 
-  // 露出/フォーカス/ホワイトバランスを「自動が収束した現在値」で固定し、フレーム間の
-  // 明るさ・ピントの変動(継ぎ目の縦スジの原因)を抑える。対応端末のみ有効。
-  // 重要: manual を値なしで指定すると暗転する端末があるため、必ず現在値を添える。
-  async function lockCameraSettings() {
-    if (!lockChk.checked || !stream) return;
-    const track = stream.getVideoTracks()[0];
-    if (!track || !track.getCapabilities || !track.applyConstraints) return;
-    // 自動露出/フォーカスが落ち着くのを少し待ってから現在値を読む
-    await new Promise(r => setTimeout(r, 600));
-    let caps = {}, cur = {};
-    try {
-      caps = track.getCapabilities() || {};
-      cur = track.getSettings ? (track.getSettings() || {}) : {};
-    } catch (e) { return; }
-    const advanced = [];
-    if (caps.exposureMode && caps.exposureMode.includes('manual')) {
-      const e = { exposureMode: 'manual' };
-      if (cur.exposureTime != null && caps.exposureTime) e.exposureTime = cur.exposureTime;
-      advanced.push(e);
-    }
-    if (caps.focusMode && caps.focusMode.includes('manual')) {
-      const f = { focusMode: 'manual' };
-      if (cur.focusDistance != null && caps.focusDistance) f.focusDistance = cur.focusDistance;
-      advanced.push(f);
-    }
-    if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes('manual')) {
-      const w = { whiteBalanceMode: 'manual' };
-      if (cur.colorTemperature != null && caps.colorTemperature) w.colorTemperature = cur.colorTemperature;
-      advanced.push(w);
-    }
-    if (!advanced.length) return;
-    try { await track.applyConstraints({ advanced }); } catch (e) { /* 非対応端末は無視 */ }
-  }
-
-  // 現フレームを縮小グレースケール化
+  // ---------- 位置合わせ ----------
   function computeGray() {
     const vw = video.videoWidth, vh = video.videoHeight;
     const dh = Math.max(1, Math.round(DW * vh / vw));
@@ -324,60 +364,6 @@
       g[j] = img[i] * 0.299 + img[i + 1] * 0.587 + img[i + 2] * 0.114;
     }
     return { g, w: DW, h: dh, scaleX: vw / DW, scaleY: vh / dh };
-  }
-
-  // 現フレームを全解像度グレースケール化(スリット配置の精密マッチング用)
-  function computeGrayFull() {
-    const vw = video.videoWidth, vh = video.videoHeight;
-    if (!fullCanvas) fullCanvas = document.createElement('canvas');
-    fullCanvas.width = vw;
-    fullCanvas.height = vh;
-    const c = fullCanvas.getContext('2d', { willReadFrequently: true });
-    c.drawImage(video, 0, 0);
-    const img = c.getImageData(0, 0, vw, vh).data;
-    const g = new Float32Array(vw * vh);
-    for (let i = 0, j = 0; j < g.length; i += 4, j++) {
-      g[j] = img[i] * 0.299 + img[i + 1] * 0.587 + img[i + 2] * 0.114;
-    }
-    return { g, w: vw, h: vh };
-  }
-
-  // 任意ステップでのSAD (全解像度の精密化用)
-  function sadAtXY(prev, cur, dx, dy, stepX, stepY) {
-    const w = cur.w, h = cur.h;
-    const ys = Math.max(0, dy), ye = Math.min(h, h + dy);
-    const xs = Math.max(0, dx), xe = Math.min(w, w + dx);
-    if (ye - ys < h * 0.4 || xe - xs < w * 0.4) return Infinity;
-    let sad = 0, cnt = 0;
-    for (let y = ys; y < ye; y += stepY) {
-      const cRow = y * w, pRow = (y - dy) * w;
-      for (let x = xs; x < xe; x += stepX) {
-        const d = cur.g[cRow + x] - prev.g[pRow + (x - dx)];
-        sad += d < 0 ? -d : d;
-        cnt++;
-      }
-    }
-    return cnt > 0 ? sad / cnt : Infinity;
-  }
-
-  // アンカー(prev)に対する現フレーム(cur)の精密な相対変位を、縮小段の推定値
-  // (cxF,cyF: 全解像度px)まわり±winで全解像度マッチングして求める。サブピクセル化。
-  function registerFull(prev, cur, cxF, cyF) {
-    const w = cur.w, h = cur.h;
-    const win = 5;
-    const stepX = Math.max(2, Math.floor(w / 220));
-    const stepY = Math.max(2, Math.floor(h / 160));
-    const cx = Math.round(cxF), cy = Math.round(cyF);
-    let best = Infinity, bdx = cx, bdy = cy;
-    for (let dy = cy - win; dy <= cy + win; dy++) {
-      for (let dx = cx - win; dx <= cx + win; dx++) {
-        const m = sadAtXY(prev, cur, dx, dy, stepX, stepY);
-        if (m < best) { best = m; bdx = dx; bdy = dy; }
-      }
-    }
-    const subx = subPixel(sadAtXY(prev, cur, bdx - 1, bdy, stepX, stepY), best, sadAtXY(prev, cur, bdx + 1, bdy, stepX, stepY));
-    const suby = subPixel(sadAtXY(prev, cur, bdx, bdy - 1, stepX, stepY), best, sadAtXY(prev, cur, bdx, bdy + 1, stepX, stepY));
-    return { dx: bdx + subx, dy: bdy + suby, ok: isFinite(best) };
   }
 
   // 整数シフト(dx,dy)での平均輝度差(SAD)。cur(x,y) ≈ prev(x-dx, y-dy)。
@@ -408,20 +394,25 @@
     return s;
   }
 
+  // 進行方向には広く、直交方向には狭く探索する。縦回転では進行方向がdy側になるため
+  // 窓のサイズは軸に応じて入れ替える(横固定だと縦回転で速い動きを取り逃がす)。
+  function searchWindow() {
+    if (!axisLocked) return { wx: 14, wy: 14 };
+    return axis === 'x' ? { wx: 16, wy: 8 } : { wx: 8, wy: 16 };
+  }
+
   // prev→cur の映像内コンテンツ移動量(dx,dy)を予測中心(pdx,pdy)まわりで探索。
-  // 整数で粗探索 → 放物線補間でサブピクセル化。戻り値は縮小px単位(小数)。
   function register(prev, cur, pdx, pdy) {
-    const w = cur.w, h = cur.h;
-    const winA = 16, winC = 8, step = 3;
-    // 動きの連続性ペナルティ: 予測(前フレームの動き)から離れた候補に加点し、
-    // キーボード等の反復模様でSADが誤って小さくなる偽の最小点に飛ぶのを防ぐ。
+    const { wx, wy } = searchWindow();
+    const w = cur.w, h = cur.h, step = 3;
+    // 動きの連続性ペナルティ: 予測から離れた候補に加点し、反復模様での偽の最小点を避ける。
     const LAMBDA = 0.4;
     const cx = Math.round(pdx), cy = Math.round(pdy);
     let best = Infinity, bestRaw = Infinity, bdx = cx, bdy = cy;
-    for (let dy = cy - winC; dy <= cy + winC; dy++) {
+    for (let dy = cy - wy; dy <= cy + wy; dy++) {
       const ys = Math.max(0, dy), ye = Math.min(h, h + dy);
       if (ye - ys < h * 0.4) continue;
-      for (let dx = cx - winA; dx <= cx + winA; dx++) {
+      for (let dx = cx - wx; dx <= cx + wx; dx++) {
         const xs = Math.max(0, dx), xe = Math.min(w, w + dx);
         if (xe - xs < w * 0.4) continue;
         let sad = 0, cnt = 0;
@@ -440,24 +431,30 @@
         }
       }
     }
-    // サブピクセル補間: 最小点の前後1pxの生SADから小数位置を推定
     const subx = subPixel(sadAt(prev, cur, bdx - 1, bdy, step), bestRaw, sadAt(prev, cur, bdx + 1, bdy, step));
     const suby = subPixel(sadAt(prev, cur, bdx, bdy - 1, step), bestRaw, sadAt(prev, cur, bdx, bdy + 1, step));
     return { dx: bdx + subx, dy: bdy + suby, ok: bestRaw < REG_OK_SCORE };
   }
 
-  // 左端だけアルファをフェードさせ、隣接スリットと線形クロスフェード
-  function applyLeftFeather(canvas, featherPx) {
-    if (featherPx <= 0) return;
+  // ---------- スリット連結 ----------
+  // px == canvas.width も有効(全幅にわたる線形ランプ)。ループの尻尾はこの形で使う。
+  function fadeEdge(canvas, px, side) {
     const w = canvas.width, h = canvas.height;
-    if (featherPx >= w) return;
+    if (w <= 0 || px <= 0) return;
+    px = Math.min(px, w);
     const ctx = canvas.getContext('2d');
     ctx.save();
     ctx.globalCompositeOperation = 'destination-in';
     const g = ctx.createLinearGradient(0, 0, w, 0);
-    g.addColorStop(0, 'rgba(0,0,0,0)');
-    g.addColorStop(featherPx / w, 'rgba(0,0,0,1)');
-    g.addColorStop(1, 'rgba(0,0,0,1)');
+    if (side === 'left') {
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(px / w, 'rgba(0,0,0,1)');
+      g.addColorStop(1, 'rgba(0,0,0,1)');
+    } else {
+      g.addColorStop(0, 'rgba(0,0,0,1)');
+      g.addColorStop(Math.max(0, 1 - px / w), 'rgba(0,0,0,1)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+    }
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
@@ -476,27 +473,30 @@
     outputWrap.appendChild(outputCanvas);
   }
 
-  // スリットを (centerX, yTop) に配置。キャンバスは右(+X)と上下(±Y)に伸ばす。
+  // スリットを (centerX, yTop) に配置(いずれもスケール後px)。
+  // キャンバスは 1024px 単位でまとめて拡張する。1スリットごとに全体をコピーし直すと
+  // 一周760枚で O(n^2) になり、後半で目に見えて重くなるため。
   function appendStrip(strip, centerX, yTop, isFirst, featherPx) {
-    if (!isFirst && featherPx > 0) applyLeftFeather(strip, featherPx);
+    if (!isFirst && featherPx > 0) fadeEdge(strip, featherPx, 'left');
     ensureOutputCanvas(strip.height);
+
     const xLeft = Math.round(centerX - strip.width / 2);
     const xRight = Math.round(centerX + strip.width / 2);
     const yBot = yTop + strip.height;
 
-    const canvasYTop = canvasMinY;
-    const canvasYBot = canvasMinY + outputCanvas.height;
-    const newYTop = Math.min(canvasYTop, yTop);
-    const newYBot = Math.max(canvasYBot, yBot);
-    const newW = Math.max(outputCanvas.width, xRight);
+    const canvasYTop = canvasMinY, canvasYBot = canvasMinY + outputCanvas.height;
+    let newW = outputCanvas.width;
+    if (xRight > newW) newW = Math.max(xRight, Math.min(newW * 2, newW + 1024));
+    let newYTop = canvasYTop, newYBot = canvasYBot;
+    if (yTop < newYTop) newYTop = yTop - 64;
+    if (yBot > newYBot) newYBot = yBot + 64;
     const newH = newYBot - newYTop;
 
     if (newW > outputCanvas.width || newH > outputCanvas.height) {
       const buf = document.createElement('canvas');
       buf.width = newW;
       buf.height = newH;
-      const shiftDown = canvasYTop - newYTop;
-      buf.getContext('2d').drawImage(outputCanvas, 0, shiftDown);
+      buf.getContext('2d').drawImage(outputCanvas, 0, canvasYTop - newYTop);
       outputCanvas.width = newW;
       outputCanvas.height = newH;
       outputCtx.drawImage(buf, 0, 0);
@@ -504,63 +504,59 @@
     }
     outputCtx.drawImage(strip, xLeft, yTop - canvasMinY);
 
-    // 自動トリム用の被覆範囲を更新(仮想座標)
     if (yTop > gInnerTop) gInnerTop = yTop;
     if (yBot < gInnerBot) gInnerBot = yBot;
+    if (yTop < gOuterTop) gOuterTop = yTop;
+    if (yBot > gOuterBot) gOuterBot = yBot;
     if (xLeft < gLeft) gLeft = xLeft;
     if (xRight > gRight) gRight = xRight;
 
-    outputSize.textContent = `${outputCanvas.width} × ${outputCanvas.height}`;
+    outputSize.textContent = `${Math.max(0, Math.round(gRight))} × ${Math.round(gOuterBot - gOuterTop)}`;
   }
 
-  // 現フレーム中央から幅 coreW のスリットを切り出して連結
+  // 現フレーム中央から幅 coreW(実解像度px) のスリットを切り出し、outScale 倍して連結。
   function drawStripAt(coreW, centerX, cross) {
-    const vw = video.videoWidth, vh = video.videoHeight;
-    const featherRatio = (+featherRange.value) / 100;
-    const feather = Math.round(featherRatio * coreW);
+    const vw = video.videoWidth, vh = video.videoHeight, S = outScale;
+    const feather = (+featherRange.value / 100) * coreW;
     let strip, featherPx;
 
     if (axis === 'x') {
-      const fullW = Math.min(vw, Math.round(coreW + feather * 2));
-      const sx = Math.max(0, Math.round(vw / 2 - fullW / 2));
+      const fullW = Math.min(vw, coreW + feather * 2);
+      const sx = Math.max(0, vw / 2 - fullW / 2);
       const srcW = Math.min(fullW, vw - sx);
+      const dw = Math.max(1, Math.round(srcW * S)), dh = Math.max(1, Math.round(vh * S));
       strip = document.createElement('canvas');
-      strip.width = srcW;
-      strip.height = vh;
-      strip.getContext('2d').drawImage(video, sx, 0, srcW, vh, 0, 0, srcW, vh);
-      featherPx = Math.max(0, srcW - coreW);
+      strip.width = dw; strip.height = dh;
+      strip.getContext('2d').drawImage(video, sx, 0, srcW, vh, 0, 0, dw, dh);
+      featherPx = Math.max(0, Math.round((srcW - coreW) * S));
     } else {
-      const fullH = Math.min(vh, Math.round(coreW + feather * 2));
-      const sy = Math.max(0, Math.round(vh / 2 - fullH / 2));
+      const fullH = Math.min(vh, coreW + feather * 2);
+      const sy = Math.max(0, vh / 2 - fullH / 2);
       const srcH = Math.min(fullH, vh - sy);
+      const dw = Math.max(1, Math.round(srcH * S)), dh = Math.max(1, Math.round(vw * S));
       strip = document.createElement('canvas');
-      strip.width = srcH;
-      strip.height = vw;
+      strip.width = dw; strip.height = dh;
       const sc = strip.getContext('2d');
-      sc.translate(srcH, 0);
+      sc.translate(dw, 0);
       sc.rotate(Math.PI / 2);
-      sc.drawImage(video, 0, sy, vw, srcH, 0, 0, vw, srcH);
-      featherPx = Math.max(0, srcH - coreW);
+      sc.drawImage(video, 0, sy, vw, srcH, 0, 0, dh, dw);
+      featherPx = Math.max(0, Math.round((srcH - coreW) * S));
     }
 
-    const yTop = alignChk.checked ? Math.round(cross) : 0;
-    appendStrip(strip, centerX, yTop, drawnCount === 0, featherPx);
+    const yTop = alignChk.checked ? Math.round(cross * S) : 0;
+    if (drawnCount === 0) centerYVirtual = yTop + strip.height / 2;
+    appendStrip(strip, centerX * S, yTop, drawnCount === 0, featherPx);
     drawnCount++;
-    hudFrames.textContent = 'フレーム: ' + drawnCount;
   }
 
-  // アンカーを現フレームに更新する
-  function setAnchor(curDown, curFull) {
-    anchorDown = curDown;
-    anchorFull = curFull || computeGrayFull();
-    predDx = 0; predDy = 0;
-    coastCount = 0;
-  }
+  function currentDeg() { return fPx > 0 ? progressU / fPx * DEG : 0; }
 
   function updateHud() {
-    progressText.textContent = drawnCount + '枚';
-    progressFill.style.width = Math.min(100, drawnCount * 1.5) + '%';
-    hudAngle.textContent = Math.round(progressU) + 'px';
+    const deg = currentDeg();
+    hudFrames.textContent = drawnCount + '枚';
+    hudAngle.textContent = deg.toFixed(1) + '°';
+    progressText.textContent = `${deg.toFixed(1)}° / 360°`;
+    progressFill.style.width = Math.min(100, deg / 360 * 100) + '%';
     hudAxis.textContent = '軸: ' + (axisLocked ? (axis === 'x' ? '横' : '縦') : '検出中')
       + (signA ? (signA > 0 ? ' +' : ' -') : '');
   }
@@ -572,153 +568,384 @@
     if (!vw) return;
     const cur = computeGray();
 
-    // 最初のフレーム: アンカーを置く(明示モードなら起点スリットも描く)
-    if (!anchorDown) {
-      setAnchor(cur, computeGrayFull());
-      panAnchorX = 0; panAnchorY = 0;
-      if (axisLocked) drawStripAt(stripAdvance(), 0, 0);
-      return;
-    }
-
-    // 現フレームのアンカーからの変位(縮小px)。アンカーは直近なので変位は小さく直接測れる
-    const reg = register(anchorDown, cur, predDx, predDy);
-    let dxD, dyD;
+    // フレーム間追跡: 毎フレーム直前フレームに対する微小変位を測る(常に小さいので確実)。
+    if (!prevDown) { prevDown = cur; return; }
+    const reg = register(prevDown, cur, predDx, predDy);
+    let mdx, mdy;
     if (reg.ok) {
-      dxD = reg.dx; dyD = reg.dy;
-      predDx = reg.dx; predDy = reg.dy;
-      coastCount = 0;
+      mdx = reg.dx; mdy = reg.dy;
     } else {
-      // 手がかり不足(暗所/平面): 直前の予測を保持してアンカーは進めず待つ
-      dxD = predDx; dyD = predDy;
-      coastCount++;
+      // 一時的に手がかり不足: 直前の速度で補間して追跡を継続
+      mdx = predDx * 0.6; mdy = predDy * 0.6;
+    }
+    predDx = mdx; predDy = mdy;
+    prevDown = cur;
+    const fdx = mdx * cur.scaleX, fdy = mdy * cur.scaleY;
+
+    // 明示モードの初回: アンカーと起点スリットを用意
+    if (axisLocked && !anchorDown) {
+      anchorDown = cur;
+      panAnchorX = 0; panAnchorY = 0; accX = 0; accY = 0; signA = 0;
+      drawStripAt(stripAdvance(), 0, 0);
       updateHud();
       return;
     }
 
-    const fdx = dxD * cur.scaleX, fdy = dyD * cur.scaleY; // アンカー→現フレームのコンテンツ移動(実px)
-
-    // 自動方向検出: 十分動いたら主軸を確定し、現フレームでアンカーを取り直して起点スリット
+    // 自動方向検出: フレーム間移動を積算し、十分動いたら主軸を確定して起点を作る
     if (!axisLocked) {
-      if (Math.abs(fdx) > AXIS_THRESH || Math.abs(fdy) > AXIS_THRESH) {
-        axis = Math.abs(fdx) >= Math.abs(fdy) ? 'x' : 'y';
+      detX += fdx; detY += fdy;
+      if (Math.abs(detX) > AXIS_THRESH || Math.abs(detY) > AXIS_THRESH) {
+        axis = Math.abs(detX) >= Math.abs(detY) ? 'x' : 'y';
         axisLocked = true;
         stripDirection = axis === 'x' ? 'horizontal' : 'vertical';
         updateStripGuide();
-        setAnchor(cur, computeGrayFull());
-        panAnchorX = 0; panAnchorY = 0;
+        anchorDown = cur;
+        panAnchorX = 0; panAnchorY = 0; accX = 0; accY = 0; signA = 0;
         drawStripAt(stripAdvance(), 0, 0);
       }
       updateHud();
       return;
     }
 
-    const advanceShift = axis === 'x' ? fdx : fdy; // コンテンツの進行方向移動
-    // カメラ前進量 = -コンテンツ移動。最初の有意な動きで符号を確定
-    if (signA === 0 && Math.abs(advanceShift) > 4) signA = (-advanceShift) > 0 ? 1 : -1;
+    accX += fdx; accY += fdy;
+    const advShift = axis === 'x' ? accX : accY;
+    if (signA === 0 && Math.abs(advShift) > 4) signA = (-advShift) > 0 ? 1 : -1;
     if (signA === 0) { updateHud(); return; }
 
-    const directed = signA * (-advanceShift); // アンカーから進んだ量(>0で前進)
+    const directed = signA * (-advShift);
     progressU = panAnchorX + Math.max(0, directed);
 
-    // stripAdvance 以上前進したら、全解像度でアンカーに対し精密マッチングして配置
     if (directed >= stripAdvance()) {
-      const curFull = computeGrayFull();
-      const ref = registerFull(anchorFull, curFull, fdx, fdy);
-      const refAdvance = axis === 'x' ? ref.dx : ref.dy;
-      const refCross = axis === 'x' ? ref.dy : ref.dx;
-      const dirPx = signA * (-refAdvance); // 精密化した前進量
+      const sX = cur.scaleX, sY = cur.scaleY;
+      const ref = register(anchorDown, cur, accX / sX, accY / sY);
+      let refAdvance, refCross;
+      if (ref.ok) {
+        refAdvance = (axis === 'x' ? ref.dx : ref.dy) * (axis === 'x' ? sX : sY);
+        refCross = (axis === 'x' ? ref.dy : ref.dx) * (axis === 'x' ? sY : sX);
+      } else {
+        refAdvance = axis === 'x' ? accX : accY;
+        refCross = axis === 'x' ? accY : accX;
+      }
+      const dirPx = signA * (-refAdvance);
       if (dirPx >= 2) {
-        // 現フレーム中央のパノラマ位置 = アンカー位置 + 前進量
         const centerX = panAnchorX + dirPx;
-        // 直交位置: アンカー位置 + カメラの直交移動(-refCross)。水平前提で0へ引き戻し
         const newCross = (panAnchorY - refCross) * CROSS_DECAY;
         drawStripAt(dirPx, centerX, newCross);
         panAnchorX = centerX;
         panAnchorY = newCross;
         progressU = centerX;
-        setAnchor(cur, curFull); // 次の基準は今置いたフレーム
-      } else {
-        // 精密化で前進が消えた(ほぼ静止): アンカーだけ更新
-        setAnchor(cur, curFull);
       }
+      anchorDown = cur;
+      accX = 0; accY = 0;
     }
     updateHud();
+
+    if (autoStopChk.checked && currentDeg() >= 360 + LOOP_OVERLAP_DEG) stop();
   }
 
-  // 完了時: 全スリットが覆っている矩形だけにクロップ
-  function autoCropOutput() {
+  // ---------- トリム ----------
+  function trimOutput(trimInner) {
     if (!outputCanvas || drawnCount === 0) return;
-    let top = Math.max(0, Math.floor(gInnerTop - canvasMinY));
-    let bot = Math.min(outputCanvas.height, Math.ceil(gInnerBot - canvasMinY));
-    // 安全ガード: 縦ドリフトで重なり範囲が極端に狭い場合、薄い帯に削るより全高を残す
-    if (bot - top < 0.5 * outputHeight) {
-      top = 0;
-      bot = outputCanvas.height;
+    let top, bot;
+    if (trimInner) {
+      top = Math.max(0, Math.floor(gInnerTop - canvasMinY));
+      bot = Math.min(outputCanvas.height, Math.ceil(gInnerBot - canvasMinY));
+      // 縦ドリフトで重なり範囲が極端に狭い場合、薄い帯に削るより全体を残す
+      if (bot - top < 0.5 * outputHeight) { top = 0; bot = outputCanvas.height; }
+    } else {
+      top = Math.max(0, Math.floor(gOuterTop - canvasMinY));
+      bot = Math.min(outputCanvas.height, Math.ceil(gOuterBot - canvasMinY));
     }
-    const left = Math.max(0, Math.floor(gLeft));
+    const left = Math.max(0, Math.floor(gLeft));       // パノラマX=0 を保つ
     const right = Math.min(outputCanvas.width, Math.ceil(gRight));
     const newH = bot - top, newW = right - left;
     if (newH <= 0 || newW <= 0) return;
+
+    stripCenterY = centerYVirtual - canvasMinY - top;
     if (newH >= outputCanvas.height && newW >= outputCanvas.width) return;
 
     const buf = document.createElement('canvas');
-    buf.width = newW;
-    buf.height = newH;
+    buf.width = newW; buf.height = newH;
     buf.getContext('2d').drawImage(outputCanvas, -left, -top);
     outputCanvas.width = newW;
     outputCanvas.height = newH;
     outputCtx.drawImage(buf, 0, 0);
-    outputSize.textContent = `${outputCanvas.width} × ${outputCanvas.height}`;
+    outputSize.textContent = `${newW} × ${newH}`;
   }
 
+  // ---------- ループ画像 ----------
+  // 撮影は 360°+オーバーラップ ぶんある。先頭から 2πf' px を切り出し、
+  // その先の「尻尾」(=同じ景色をもう一度撮ったぶん)を先頭にクロスフェードして
+  // 左右端が連続するループ画像にする。
+  function buildLoop() {
+    if (!outputCanvas || fPx <= 0) return null;
+    const adj = +loopAdj.value;
+    const fAdj = fPx * outScale * (1 + adj / 100);
+    const src = outputCanvas;
+
+    let W = Math.round(2 * Math.PI * fAdj);
+    let clamped = false;
+    if (W > src.width) { W = src.width; clamped = true; }
+    const tailAvail = src.width - W;
+    const blend = Math.max(0, Math.min(tailAvail, Math.round(fAdj * BLEND_DEG / DEG)));
+
+    const H = src.height;
+    const out = document.createElement('canvas');
+    out.width = W; out.height = H;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(src, 0, 0, W, H, 0, 0, W, H);
+
+    if (blend > 0) {
+      // 尻尾 [W, W+blend) は先頭 [0, blend) と同じ景色。左を不透明・右を透明にして重ねる。
+      // これで x=W-1 → x=0 の折り返しが連続する。
+      const tail = document.createElement('canvas');
+      tail.width = blend; tail.height = H;
+      tail.getContext('2d').drawImage(src, W, 0, blend, H, 0, 0, blend, H);
+      fadeEdge(tail, blend, 'right');
+      ctx.drawImage(tail, 0, 0);
+    }
+
+    loopCanvas = out;
+    loopWrap.innerHTML = '';
+    loopWrap.appendChild(out);
+    loopSize.textContent = `${W} × ${H}`;
+
+    const impliedFov = 2 * Math.atan((video.videoWidth / 2) / (fPx * (1 + adj / 100))) * DEG;
+    loopInfo.textContent =
+      `幅 ${W}px = 360° / 継ぎ目ブレンド ${blend}px (${(blend / fAdj * DEG).toFixed(1)}°) / ` +
+      `この設定に相当する水平画角 ${impliedFov.toFixed(1)}°`;
+    loopInfo.className = 'status' + (clamped || blend === 0 ? ' warn' : '');
+    if (clamped) loopInfo.textContent += ' — 撮影量が足りず切り詰めました。微調整を負の方向へ。';
+    else if (blend === 0) loopInfo.textContent += ' — 尻尾が無くブレンドできていません。';
+
+    return { canvas: out, f: fAdj, cy: stripCenterY };
+  }
+
+  // ---------- 360°ビューア (WebGL) ----------
+  // ループ画像を円筒テクスチャとみなす。パノラマX = 一周角 θ、パノラマY = カメラの
+  // 直交方向画角 φ で、円筒投影 x = f·θ, y = cy + f·tan(φ) の逆写像を描く。
+  // カメラは帯の接線を「右」に取る (θ方向へ横スクロールする自然な操作になる)。
+  const VS_SRC = `attribute vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }`;
+  const FS_SRC = `precision highp float;
+    uniform mat3 uM;                 // 列: right, up, forward
+    uniform vec2 uRes;
+    uniform float uFv, uCy, uF, uH, uSweep, uPerp;
+    uniform sampler2D uT;
+    const float PI2 = 6.28318530718;
+    void main(){
+      vec2 p = gl_FragCoord.xy - uRes * 0.5;
+      vec3 d = normalize(uM * vec3(p.x, p.y, uFv));
+      float ph = asin(clamp(d.z, -1.0, 1.0));
+      float y = uCy + uPerp * uF * tan(ph);
+      if (abs(ph) > 1.3 || y < 0.0 || y > uH) { gl_FragColor = vec4(0.055, 0.055, 0.06, 1.0); return; }
+      float th = atan(uSweep * d.x, d.y);
+      gl_FragColor = texture2D(uT, vec2(fract(th / PI2 + 1.0), y / uH));
+    }`;
+
+  const view = { gl: null, prog: null, tex: null, loc: {}, texW: 0, texH: 0, cy: 0, f: 0,
+                 theta: Math.PI / 2, psi: 0, fov: 90 / DEG, raf: 0, ready: false };
+
+  function compile(gl, type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+
+  function initGL() {
+    if (view.gl) return true;
+    const gl = viewerCanvas.getContext('webgl', { antialias: false, preserveDrawingBuffer: false });
+    if (!gl) return false;
+    try {
+      const prog = gl.createProgram();
+      gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VS_SRC));
+      gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FS_SRC));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog);
+
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const a = gl.getAttribLocation(prog, 'a');
+      gl.enableVertexAttribArray(a);
+      gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+
+      for (const n of ['uM', 'uRes', 'uFv', 'uCy', 'uF', 'uH', 'uSweep', 'uPerp', 'uT']) {
+        view.loc[n] = gl.getUniformLocation(prog, n);
+      }
+      view.gl = gl; view.prog = prog;
+      return true;
+    } catch (e) {
+      console.error('WebGL init failed:', e);
+      return false;
+    }
+  }
+
+  // NPOT テクスチャは WebGL1 で REPEAT できないので、ラップはシェーダの fract() で行い、
+  // テクスチャは CLAMP_TO_EDGE + LINEAR にする。継ぎ目はブレンド済みなので端の1px差は見えない。
+  function uploadTexture(src, fScaled, cy) {
+    const gl = view.gl;
+    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    const limit = Math.min(4096, maxTex);
+    const k = Math.min(1, limit / src.width, limit / src.height);
+    let tex2d = src;
+    if (k < 1) {
+      tex2d = document.createElement('canvas');
+      tex2d.width = Math.max(1, Math.round(src.width * k));
+      tex2d.height = Math.max(1, Math.round(src.height * k));
+      tex2d.getContext('2d').drawImage(src, 0, 0, tex2d.width, tex2d.height);
+    }
+    if (!view.tex) view.tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, view.tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tex2d);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const scale = tex2d.width / src.width;
+    view.texW = tex2d.width;
+    view.texH = tex2d.height;
+    view.f = fScaled * scale;
+    view.cy = cy * scale;
+    view.ready = true;
+  }
+
+  function resizeViewer() {
+    const cssW = viewerCanvas.clientWidth || 640;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.min(1280, Math.round(cssW * dpr));
+    const h = Math.round(w * 9 / 16);
+    if (viewerCanvas.width !== w || viewerCanvas.height !== h) {
+      viewerCanvas.width = w; viewerCanvas.height = h;
+    }
+  }
+
+  function renderViewer() {
+    if (!view.ready) return;
+    resizeViewer();
+    const gl = view.gl, W = viewerCanvas.width, H = viewerCanvas.height;
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(view.prog);
+
+    const th = view.theta, ps = view.psi;
+    const st = Math.sin(th), ct = Math.cos(th), sp = Math.sin(ps), cp = Math.cos(ps);
+    const F = [st * cp, ct * cp, sp];        // 視線 (帯上の位置)
+    const R = [ct, -st, 0];                  // 帯の接線 = 画面右
+    const U = [-st * sp, -ct * sp, cp];      // R × F = 帯の横断方向 = 画面上
+    gl.uniformMatrix3fv(view.loc.uM, false, new Float32Array([...R, ...U, ...F]));
+    gl.uniform2f(view.loc.uRes, W, H);
+    gl.uniform1f(view.loc.uFv, (W / 2) / Math.tan(view.fov / 2));
+    gl.uniform1f(view.loc.uCy, view.cy);
+    gl.uniform1f(view.loc.uF, view.f);
+    gl.uniform1f(view.loc.uH, view.texH);
+    gl.uniform1f(view.loc.uSweep, flipSweepChk.checked ? -1 : 1);
+    gl.uniform1f(view.loc.uPerp, flipPerpChk.checked ? -1 : 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, view.tex);
+    gl.uniform1i(view.loc.uT, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // 自動回転していないときは描画しない(ドラッグ・ホイール・トグルは直接 renderViewer を呼ぶ)。
+  function viewerTick() {
+    view.raf = requestAnimationFrame(viewerTick);
+    if (!autoSpin.checked || dragging) return;
+    view.theta += 0.004;
+    renderViewer();
+  }
+
+  let dragging = false, lastX = 0, lastY = 0;
+  viewerCanvas.addEventListener('pointerdown', e => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    viewerCanvas.setPointerCapture(e.pointerId);
+  });
+  viewerCanvas.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    // 画面右は θ が増える向き、画面上は ψ が減る向き。指に追従させるため両方とも符号は負。
+    const k = view.fov / viewerCanvas.clientWidth;
+    view.theta -= (e.clientX - lastX) * k;
+    view.psi = Math.max(-1.2, Math.min(1.2, view.psi - (e.clientY - lastY) * k));
+    lastX = e.clientX; lastY = e.clientY;
+    renderViewer();
+  });
+  const endDrag = e => { dragging = false; try { viewerCanvas.releasePointerCapture(e.pointerId); } catch {} };
+  viewerCanvas.addEventListener('pointerup', endDrag);
+  viewerCanvas.addEventListener('pointercancel', endDrag);
+  viewerCanvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    view.fov = Math.max(30 / DEG, Math.min(120 / DEG, view.fov * (1 + e.deltaY * 0.001)));
+    renderViewer();
+  }, { passive: false });
+  window.addEventListener('resize', () => { if (view.ready) renderViewer(); });
+  [flipSweepChk, flipPerpChk].forEach(c => c.addEventListener('change', renderViewer));
+
+  function showViewer(built) {
+    if (!initGL()) {
+      viewerSection.hidden = true;
+      setStatus('WebGL が使えないため360°ビューアは表示できません。ループ画像の保存は可能です。', 'warn');
+      return;
+    }
+    viewerSection.hidden = false;
+    resizeViewer();
+    uploadTexture(built.canvas, built.f, built.cy);
+    view.theta = Math.PI / 2; view.psi = 0;
+    const halfPerp = Math.atan(Math.max(view.cy, view.texH - view.cy) / view.f) * DEG;
+    viewerStatus.textContent = `帯の幅 ±${halfPerp.toFixed(0)}° / 一周方向が画面の横スクロールに対応します（天井と地面は横に並びます）。`;
+    if (!view.raf) viewerTick();
+  }
+
+  // ---------- 撮影の開始・停止 ----------
   function resetState() {
-    anchorDown = null;
-    anchorFull = null;
-    predDx = 0; predDy = 0;
-    coastCount = 0;
+    prevDown = null; anchorDown = null;
+    predDx = 0; predDy = 0; accX = 0; accY = 0; detX = 0; detY = 0;
     axisLocked = modeSel.value !== 'auto';
     axis = modeSel.value === 'vertical' ? 'y' : 'x';
     stripDirection = axis === 'x' ? 'horizontal' : 'vertical';
-    signA = 0;
-    panAnchorX = 0; panAnchorY = 0;
-    progressU = 0;
-    drawnCount = 0;
-    outputCanvas = null;
-    outputCtx = null;
-    outputHeight = 0;
-    canvasMinY = 0;
-    gInnerTop = -Infinity; gInnerBot = Infinity; gLeft = Infinity; gRight = -Infinity;
+    signA = 0; panAnchorX = 0; panAnchorY = 0;
+    progressU = 0; drawnCount = 0; capturedDeg = 0;
+    outputCanvas = null; outputCtx = null; outputHeight = 0; canvasMinY = 0;
+    centerYVirtual = 0; stripCenterY = 0; loopCanvas = null;
+    gInnerTop = -Infinity; gInnerBot = Infinity;
+    gOuterTop = Infinity; gOuterBot = -Infinity;
+    gLeft = Infinity; gRight = -Infinity;
   }
 
-  async function start() {
-    try {
-      setStatus('カメラを準備中…');
-      await ensureCamera();
-      await lockCameraSettings();
-    } catch (e) {
-      setStatus('初期化失敗: ' + e.message, 'error');
-      return;
-    }
-
-    resetState();
+  function clearResults() {
     outputWrap.innerHTML = '<span>未撮影</span>';
     outputWrap.classList.add('empty');
     outputSize.textContent = '-';
-    hudFrames.textContent = 'フレーム: 0';
-    hudAngle.textContent = '0px';
+    loopSection.hidden = true;
+    viewerSection.hidden = true;
+    loopWrap.innerHTML = '';
+    hudFrames.textContent = '0枚';
+    hudAngle.textContent = '0.0°';
     progressFill.style.width = '0%';
-    progressText.textContent = '0枚';
+    progressText.textContent = '0.0° / 360°';
+    downloadBtn.disabled = true;
+    resetBtn.disabled = true;
+  }
+
+  async function start() {
+    try { setStatus('カメラを準備中…'); await ensureCamera(); }
+    catch (e) { setStatus('初期化失敗: ' + e.message, 'error'); return; }
+
+    resetState();
+    clearResults();
+    fPx = focalFor(video.videoWidth, fovDeg());
+    outScale = resolveScale(video.videoWidth, video.videoHeight, fPx);
+    updateCalibInfo();
     updateStripGuide();
 
     capturing = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    downloadBtn.disabled = true;
-    resetBtn.disabled = true;
-
-    setStatus(modeSel.value === 'auto'
-      ? '撮影中: ゆっくり一定速度で回転してください (方向を検出中)'
-      : '撮影中: ゆっくり一定速度で回転してください');
+    setStatus(autoStopChk.checked
+      ? `撮影中: ゆっくり一定速度で一周してください (${360 + LOOP_OVERLAP_DEG}° で自動停止)`
+      : '撮影中: ゆっくり一定速度で一周してください');
     rafId = requestAnimationFrame(loop);
   }
 
@@ -728,36 +955,36 @@
     if (rafId) cancelAnimationFrame(rafId);
     rafId = 0;
     stopBtn.disabled = true;
-
-    if (autoCropChk.checked) autoCropOutput();
-
     startBtn.disabled = false;
+
+    capturedDeg = currentDeg();
+    trimOutput(autoCropChk.checked);
     downloadBtn.disabled = drawnCount === 0;
     resetBtn.disabled = drawnCount === 0;
-    setStatus(`撮影終了: ${drawnCount}スリット / 出力 ${outputCanvas ? outputCanvas.width + '×' + outputCanvas.height : '-'}`, 'ok');
+
+    if (drawnCount === 0) { setStatus('スリットが1枚も置かれませんでした。もっと大きく動かしてください。', 'error'); return; }
+
+    if (capturedDeg >= 360) {
+      loopSection.hidden = false;
+      const built = buildLoop();
+      if (built) showViewer(built);
+      setStatus(`撮影終了: ${capturedDeg.toFixed(1)}° / ${drawnCount}スリット / 帯 ${outputCanvas.width}×${outputCanvas.height}`, 'ok');
+    } else {
+      loopSection.hidden = true;
+      viewerSection.hidden = true;
+      setStatus(`撮影終了: ${capturedDeg.toFixed(1)}° — 360°に届いていないためループ画像とビューアは作れません。帯状PNGは保存できます。`, 'warn');
+    }
   }
 
-  function reset() {
-    resetState();
-    outputWrap.innerHTML = '<span>未撮影</span>';
-    outputWrap.classList.add('empty');
-    outputSize.textContent = '-';
-    downloadBtn.disabled = true;
-    resetBtn.disabled = true;
-    hudFrames.textContent = 'フレーム: 0';
-    hudAngle.textContent = '0px';
-    progressFill.style.width = '0%';
-    progressText.textContent = '0枚';
-    setStatus('リセットしました');
-  }
+  function reset() { resetState(); clearResults(); setStatus('リセットしました'); }
 
-  function download() {
-    if (!outputCanvas) return;
-    outputCanvas.toBlob(blob => {
+  function saveCanvas(canvas, name) {
+    if (!canvas) return;
+    canvas.toBlob(blob => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `panorama-${Date.now()}.png`;
+      a.download = `${name}-${Date.now()}.png`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }, 'image/png');
@@ -765,15 +992,23 @@
 
   startBtn.addEventListener('click', start);
   stopBtn.addEventListener('click', stop);
-  downloadBtn.addEventListener('click', download);
+  downloadBtn.addEventListener('click', () => saveCanvas(outputCanvas, 'panorama-strip'));
   resetBtn.addEventListener('click', reset);
+  loopDownloadBtn.addEventListener('click', () => saveCanvas(loopCanvas, 'panorama-loop'));
+  loopAdj.addEventListener('input', () => {
+    loopAdjVal.textContent = (+loopAdj.value).toFixed(1) + '%';
+    const built = buildLoop();
+    if (built && view.ready) uploadTexture(built.canvas, built.f, built.cy);
+  });
+  loopResetAdj.addEventListener('click', () => {
+    loopAdj.value = 0;
+    loopAdj.dispatchEvent(new Event('input'));
+  });
   window.addEventListener('resize', updateStripGuide);
   window.addEventListener('orientationchange', () => setTimeout(updateStripGuide, 300));
 
-  // 初期ガイド
   updateStripGuide();
 
-  // 必須条件チェック
   if (!('mediaDevices' in navigator) || !navigator.mediaDevices.getUserMedia) {
     setStatus('このブラウザはカメラAPIに対応していません', 'error');
     startBtn.disabled = true;
