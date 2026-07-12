@@ -268,12 +268,20 @@
   //      進行方向の半画角が 33.5° なら 15% ほど多めに測ってしまう。
   // 起点フレームに戻ったことを画像で検出し、そのときのパノラマX座標をそのまま
   // 一周の長さとする。スリットを置いたのと同じ座標系で測るので両方の誤差が消える。
-  const CLOSURE_MIN_FRAC = 0.55; // 推定一周長のこの割合を超えたら照合を始める
-  const CLOSURE_MAX_FRAC = 2.0;  // ここまでに見つからなければ諦める
+  //
+  // 判定は ZNCC(正規化相互相関) の「窓端棄却」で行う。SAD のしきい値だけでは、
+  // 真の一致点がまだ遥か先で探索窓の外にあるとき、無関係なフレーム同士の
+  // 最良SADがたまたま小さくなって誤検出する(のっぺりした天井などで頻発)。
+  // 真の一致点が窓外にあれば最良オフセットは必ず窓の端に張り付くので、それを弾く。
+  // ZNCC は輝度のオフセット・ゲインに不変なので露出変化にも強い。
+  const CLOSURE_MIN_FRAC = 0.5;  // 推定一周長のこの割合を超えたら照合を始める
+  const CLOSURE_MAX_FRAC = 2.2;  // ここまでに見つからなければ諦める
   const CLOSURE_HARD_FRAC = 3.0; // 暴走防止の強制停止
-  const CLOSURE_SAD = 42;        // 一周とみなす平均輝度差(露出変化を見込んで緩め)
-  const CLOSURE_CONFIRM = 6;     // 最小値を過ぎたと判断する連続フレーム数
-  const CLOSURE_WIN_ADV = 16, CLOSURE_WIN_CROSS = 10;   // 探索窓(縮小px)
+  const CLOSURE_SCORE = 0.70;    // 一周とみなす最低ZNCC
+  const CLOSURE_CONFIRM = 5;     // ピークを過ぎたと判断する連続サンプル数
+  const CLOSURE_WIN_ADV = 40, CLOSURE_WIN_CROSS = 12;  // 探索窓(縮小px) 進行方向は±10°相当
+  const CLOSURE_EDGE = 5;        // 最良点が窓端からこれ以内なら「窓外に真値あり」とみなす
+  const CLOSURE_MIN_STD = 6;     // 手がかりの乏しいフレームは照合しない
 
   // 直交(縦)方向は実測値をそのまま追従する。かつて 0.9 を掛けて0へ引き戻していたが、
   // 引き戻し量 (1-λ)·(現在のドリフト) がそのまま継ぎ目の段差になる。定常状態では
@@ -329,6 +337,10 @@
   const stripAdvance = () => +intervalRange.value;
   const fovDeg = () => +fovRange.value;
   const focalFor = (vw, fov) => (vw / 2) / Math.tan(fov / 2 / DEG);
+  // 相互相関はフレーム全体の平均移動量を返す。回転時のセンサ上の移動量は中心で f·dθ、
+  // 周辺で (f + a²/f)·dθ なので、平均すると f·dθ·(1 + tan²(半画角)/3) と系統的に大きく出る。
+  // 一周検出前の推定角度をこの係数で割り戻し、実角度に近づける(半画角は進行方向=水平画角の半分)。
+  const avgInflation = () => { const h = Math.tan(fovDeg() / 2 / DEG); return 1 + h * h / 3; };
 
   function autoScaleFor(vw, vh, f) {
     const wReal = 2 * Math.PI * f * (1 + LOOP_OVERLAP_DEG / 360) + 200;
@@ -699,7 +711,15 @@
 
   // 一周を検出済みならその実測長を、まだなら画角からの推定長を目盛りに使う。
   function loopLengthPx() { return loopLocked ? loopPx : (fPx > 0 ? 2 * Math.PI * fPx : 0); }
-  function currentDeg() { const L = loopLengthPx(); return L > 0 ? progressU / L * 360 : 0; }
+  // 表示・自動停止用の角度。一周検出前は平均化係数で割り戻して過大表示を抑える。
+  // 実測ロック後は progressU も loopPx も同じ過大評価を持つので相殺され、補正しない。
+  // (幾何・出力幅は loopLengthPx() 側で補正しないこと。ここは表示角度専用。)
+  function currentDeg() {
+    const L = loopLengthPx();
+    if (L <= 0) return 0;
+    const k = loopLocked ? 1 : avgInflation();
+    return progressU / (L * k) * 360;
+  }
 
   function updateHud() {
     const deg = currentDeg();
